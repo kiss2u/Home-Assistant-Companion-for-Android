@@ -17,7 +17,6 @@ import androidx.wear.compose.material.ToggleChipDefaults
 import androidx.wear.compose.material3.contentColorFor
 import io.homeassistant.companion.android.common.data.integration.Entity
 import io.homeassistant.companion.android.common.data.integration.EntityPosition
-import io.homeassistant.companion.android.common.data.integration.domain
 import io.homeassistant.companion.android.common.data.integration.getCoverPosition
 import io.homeassistant.companion.android.common.data.integration.getFanSpeed
 import io.homeassistant.companion.android.common.data.integration.getLightBrightness
@@ -158,9 +157,11 @@ object WearToggleChip {
 
                     // Painters that match ToggleChipDefaults
                     checkedBackgroundPaint = WearBrushPainter(Brush.linearGradient(checkedBackgroundColors))
-                    disabledCheckedBackgroundPaint = WearBrushPainter(Brush.linearGradient(disabledCheckedBackgroundColors))
+                    disabledCheckedBackgroundPaint =
+                        WearBrushPainter(Brush.linearGradient(disabledCheckedBackgroundColors))
                     uncheckedBackgroundPaint = WearBrushPainter(Brush.linearGradient(uncheckedBackgroundColors))
-                    disabledUncheckedBackgroundPaint = WearBrushPainter(Brush.linearGradient(disabledUncheckedBackgroundColors))
+                    disabledUncheckedBackgroundPaint =
+                        WearBrushPainter(Brush.linearGradient(disabledUncheckedBackgroundColors))
                 }
 
                 defaultChipColors(

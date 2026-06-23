@@ -4,6 +4,14 @@ root = true
 charset = utf-8
 indent_size = 4
 indent_style = space
+insert_final_newline = true
+end_of_line = lf
+trim_trailing_whitespace = true
+
+[*.{yml,yaml}]
+indent_size = 2
+ij_yaml_spaces_within_braces = false
+ij_yaml_spaces_within_brackets = false
 
 [*.{kt,kts}]
 ktlint_code_style = android_studio
@@ -16,4 +24,7 @@ ij_kotlin_allow_trailing_comma_on_call_site = true
 ij_kotlin_allow_trailing_comma = true
 # Disable converting functions to expression bodies
 ktlint_standard_function-expression-body = disabled
+max_line_length = 120
+
+[**/test/**.kt]
 max_line_length = off

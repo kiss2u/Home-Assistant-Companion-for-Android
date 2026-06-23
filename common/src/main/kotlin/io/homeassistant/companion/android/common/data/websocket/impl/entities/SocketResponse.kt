@@ -17,11 +17,11 @@ internal sealed interface SocketResponse {
          * This module needs to be given to the Json builder to be able to deserialize unknown types.
          * Without this module, a runtime exception will be thrown for received messages with an unknown type.
          */
-        internal val socketResponseSerializerModuler = SerializersModule {
-            polymorphicDefaultDeserializer(SocketResponse::class) {
+        internal val socketResponseSerializerModule = SerializersModule {
+            polymorphicDefaultDeserializer(SocketResponse::class) { className ->
                 object : UnknownJsonContentDeserializer<UnknownTypeSocketResponse>() {
                     override val builder = UnknownJsonContentBuilder { content ->
-                        UnknownTypeSocketResponse(content)
+                        UnknownTypeSocketResponse(className, content)
                     }
                 }
             }
@@ -33,9 +33,9 @@ internal sealed interface SocketResponse {
  * This class is used as fallback when the type received is not known within the codebase.
  * The type can be found directly within the [content].
  */
-internal data class UnknownTypeSocketResponse(
-    override val content: JsonElement,
-) : SocketResponse, UnknownJsonContent
+internal data class UnknownTypeSocketResponse(override val discriminator: String?, override val content: JsonElement) :
+    SocketResponse,
+    UnknownJsonContent
 
 @Serializable
 internal sealed interface AuthSocketResponse : SocketResponse {
@@ -86,7 +86,5 @@ internal data class PongSocketResponse(
 
 @Serializable
 @SerialName("event")
-internal data class EventSocketResponse(
-    override val id: Long? = null,
-    val event: JsonElement? = null,
-) : SocketResponseWithId
+internal data class EventSocketResponse(override val id: Long? = null, val event: JsonElement? = null) :
+    SocketResponseWithId

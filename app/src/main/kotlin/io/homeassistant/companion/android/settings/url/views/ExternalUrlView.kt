@@ -30,11 +30,12 @@ fun ExternalUrlView(
     externalUrl: String?,
     onUseCloudToggle: (Boolean) -> Unit,
     onExternalUrlSaved: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val focusRequester = remember { FocusRequester() }
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .padding(safeBottomPaddingValues(applyHorizontal = false))
             .padding(vertical = 16.dp),
     ) {
@@ -61,12 +62,9 @@ fun ExternalUrlView(
 }
 
 @Composable
-fun ExternalUrlCloudView(
-    useCloud: Boolean,
-    onUseCloudToggle: (Boolean) -> Unit,
-) {
+fun ExternalUrlCloudView(useCloud: Boolean, onUseCloudToggle: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .clickable { onUseCloudToggle(!useCloud) }
             .heightIn(min = 56.dp)
             .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -81,7 +79,9 @@ fun ExternalUrlCloudView(
         Switch(
             checked = useCloud,
             onCheckedChange = null,
-            colors = SwitchDefaults.colors(uncheckedThumbColor = colorResource(commonR.color.colorSwitchUncheckedThumb)),
+            colors = SwitchDefaults.colors(
+                uncheckedThumbColor = colorResource(commonR.color.colorSwitchUncheckedThumb),
+            ),
         )
     }
 }

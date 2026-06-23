@@ -4,7 +4,6 @@ import android.car.Car
 import android.car.drivingstate.CarUxRestrictionsManager
 import android.content.Intent
 import android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -12,7 +11,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import dagger.hilt.android.AndroidEntryPoint
+import io.homeassistant.companion.android.common.util.isAutomotive
 import io.homeassistant.companion.android.util.PermissionRequestMediator
+import io.homeassistant.companion.android.util.enableEdgeToEdgeCompat
 import javax.inject.Inject
 import kotlin.math.absoluteValue
 import kotlinx.coroutines.launch
@@ -28,6 +29,7 @@ open class BaseActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdgeCompat()
         lifecycleScope.launch {
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 permissionRequestMediator.eventFlow.collect { permissionToRequest ->
@@ -54,10 +56,10 @@ open class BaseActivity : AppCompatActivity() {
     }
 
     private fun registerListener() {
-        if (packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)) {
+        if (isAutomotive()) {
             car = Car.createCar(this)
             carRestrictionManager =
-                car?.getCarManager(Car.CAR_UX_RESTRICTION_SERVICE) as CarUxRestrictionsManager
+                car?.getCarManager(Car.CAR_UX_RESTRICTION_SERVICE) as? CarUxRestrictionsManager
             val listener =
                 CarUxRestrictionsManager.OnUxRestrictionsChangedListener { restrictions ->
                     if (restrictions.isRequiresDistractionOptimization) {

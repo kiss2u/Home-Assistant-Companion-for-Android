@@ -10,10 +10,17 @@ import android.hardware.SensorManager.SENSOR_DELAY_NORMAL
 import android.os.Build
 import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.common.util.SdkVersion
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
-class StepsSensorManager : SensorManager, SensorEventListener {
+class StepsSensorManager :
+    SensorManager,
+    SensorEventListener {
     companion object {
         private var isListenerRegistered = false
         private var listenerLastRegistered = 0
@@ -27,6 +34,8 @@ class StepsSensorManager : SensorManager, SensorEventListener {
             stateClass = SensorManager.STATE_CLASS_TOTAL_INCREASING,
         )
     }
+
+    private val ioScope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job())
 
     override fun docsLink(): String {
         return "https://companion.home-assistant.io/docs/core/sensors#pedometer-sensors"
@@ -42,8 +51,8 @@ class StepsSensorManager : SensorManager, SensorEventListener {
     private lateinit var latestContext: Context
     private lateinit var mySensorManager: android.hardware.SensorManager
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
+        return if (SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) {
             arrayOf(Manifest.permission.ACTIVITY_RECOGNITION)
         } else {
             emptyArray()
@@ -55,9 +64,7 @@ class StepsSensorManager : SensorManager, SensorEventListener {
         return packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_STEP_COUNTER)
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         latestContext = context
         updateStepsSensor()
     }
@@ -96,13 +103,15 @@ class StepsSensorManager : SensorManager, SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event?.sensor?.type == Sensor.TYPE_STEP_COUNTER) {
-            onSensorUpdated(
-                latestContext,
-                stepsSensor,
-                event.values[0].roundToInt().toString(),
-                stepsSensor.statelessIcon,
-                mapOf(),
-            )
+            ioScope.launch {
+                onSensorUpdated(
+                    latestContext,
+                    stepsSensor,
+                    event.values[0].roundToInt().toString(),
+                    stepsSensor.statelessIcon,
+                    mapOf(),
+                )
+            }
         }
         mySensorManager.unregisterListener(this)
         Timber.d("Steps sensor listener unregistered")

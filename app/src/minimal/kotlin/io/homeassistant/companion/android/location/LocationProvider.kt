@@ -5,11 +5,11 @@ import android.content.Context
 import android.location.Location
 import android.location.LocationManager
 import android.os.Build
-import android.os.Build.VERSION.SDK_INT
 import android.os.CancellationSignal
 import androidx.annotation.RequiresPermission
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.common.util.instant
 import io.homeassistant.companion.android.sensors.GeocodeSensorManager.Companion.LOCATION_OUTDATED_THRESHOLD
 import kotlin.coroutines.resume
@@ -18,7 +18,7 @@ import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import timber.log.Timber
 
-private val provider: String = if (SDK_INT >= Build.VERSION_CODES.S) {
+private val provider: String = if (SdkVersion.isAtLeast(Build.VERSION_CODES.S)) {
     LocationManager.FUSED_PROVIDER
 } else {
     LocationManager.GPS_PROVIDER
@@ -41,7 +41,9 @@ suspend fun getLastLocation(context: Context): Location? {
      * Note: In systems where no application or service actively requests location updates,
      * the last known location may never gets updated.
      */
-    return if (lastKnownLocation == null || Clock.System.now() - lastKnownLocation.instant() > LOCATION_OUTDATED_THRESHOLD) {
+    return if (lastKnownLocation == null ||
+        Clock.System.now() - lastKnownLocation.instant() > LOCATION_OUTDATED_THRESHOLD
+    ) {
         Timber.d("Last known location is null or too old, getting current location.")
         locationManager.getCurrentLocation(context)
     } else {
@@ -51,6 +53,12 @@ suspend fun getLastLocation(context: Context): Location? {
 
 private suspend fun LocationManager.getCurrentLocation(context: Context): Location? {
     return suspendCoroutine {
-        LocationManagerCompat.getCurrentLocation(this, provider, CancellationSignal(), ContextCompat.getMainExecutor(context), it::resume)
+        LocationManagerCompat.getCurrentLocation(
+            this,
+            provider,
+            CancellationSignal(),
+            ContextCompat.getMainExecutor(context),
+            it::resume,
+        )
     }
 }

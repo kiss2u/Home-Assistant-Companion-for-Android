@@ -23,7 +23,11 @@ import androidx.media3.common.util.UnstableApi
 import kotlin.time.Duration
 
 @OptIn(UnstableApi::class)
-internal class FakePlayer(val currentPosition: Duration = Duration.ZERO, val muted: Boolean = false, val playing: Boolean = false) : Player {
+internal class FakePlayer(
+    val currentPosition: Duration = Duration.ZERO,
+    val muted: Boolean = false,
+    val playing: Boolean = false,
+) : Player {
     override fun getApplicationLooper(): Looper {
         TODO("Not yet implemented")
     }
@@ -113,12 +117,10 @@ internal class FakePlayer(val currentPosition: Duration = Duration.ZERO, val mut
     }
 
     override fun getAvailableCommands(): Player.Commands {
-        TODO("Not yet implemented")
+        return Player.Commands.Builder().addAllCommands().build()
     }
 
-    override fun prepare() {
-        TODO("Not yet implemented")
-    }
+    override fun prepare() {}
 
     override fun getPlaybackState(): Int {
         return if (playing) Player.STATE_READY else Player.STATE_IDLE
@@ -208,10 +210,6 @@ internal class FakePlayer(val currentPosition: Duration = Duration.ZERO, val mut
         TODO("Not yet implemented")
     }
 
-    override fun seekToPreviousWindow() {
-        TODO("Not yet implemented")
-    }
-
     override fun seekToPreviousMediaItem() {
         TODO("Not yet implemented")
     }
@@ -224,23 +222,7 @@ internal class FakePlayer(val currentPosition: Duration = Duration.ZERO, val mut
         TODO("Not yet implemented")
     }
 
-    override fun hasNext(): Boolean {
-        TODO("Not yet implemented")
-    }
-
-    override fun hasNextWindow(): Boolean {
-        TODO("Not yet implemented")
-    }
-
     override fun hasNextMediaItem(): Boolean {
-        TODO("Not yet implemented")
-    }
-
-    override fun next() {
-        TODO("Not yet implemented")
-    }
-
-    override fun seekToNextWindow() {
         TODO("Not yet implemented")
     }
 
@@ -333,7 +315,7 @@ internal class FakePlayer(val currentPosition: Duration = Duration.ZERO, val mut
     }
 
     override fun getCurrentMediaItem(): MediaItem? {
-        TODO("Not yet implemented")
+        return null
     }
 
     override fun getMediaItemCount(): Int {
@@ -426,6 +408,14 @@ internal class FakePlayer(val currentPosition: Duration = Duration.ZERO, val mut
 
     override fun getVolume(): Float {
         return if (muted) 0f else 1.0f
+    }
+
+    override fun mute() {
+        TODO("Not yet implemented")
+    }
+
+    override fun unmute() {
+        TODO("Not yet implemented")
     }
 
     override fun clearVideoSurface() {

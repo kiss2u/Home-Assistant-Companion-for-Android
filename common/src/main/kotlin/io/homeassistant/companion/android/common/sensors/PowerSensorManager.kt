@@ -1,9 +1,7 @@
 package io.homeassistant.companion.android.common.sensors
 
 import android.content.Context
-import android.os.Build
 import android.os.PowerManager
-import androidx.annotation.RequiresApi
 import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
 
@@ -47,26 +45,18 @@ class PowerSensorManager : SensorManager {
         get() = commonR.string.sensor_name_power
 
     override suspend fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            listOf(interactiveDevice, doze, powerSave)
-        } else {
-            listOf(interactiveDevice, powerSave)
-        }
+        return listOf(interactiveDevice, doze, powerSave)
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return emptyArray()
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         val powerManager = context.getSystemService<PowerManager>()!!
         updateInteractive(context, powerManager)
         updatePowerSave(context, powerManager)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            updateDoze(context, powerManager)
-        }
+        updateDoze(context, powerManager)
     }
 
     private suspend fun updateInteractive(context: Context, powerManager: PowerManager) {
@@ -86,7 +76,6 @@ class PowerSensorManager : SensorManager {
         )
     }
 
-    @RequiresApi(Build.VERSION_CODES.M)
     private suspend fun updateDoze(context: Context, powerManager: PowerManager) {
         if (!isEnabled(context, doze)) {
             return

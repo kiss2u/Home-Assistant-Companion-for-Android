@@ -9,6 +9,7 @@ import android.os.Process
 import androidx.annotation.RequiresApi
 import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.common.util.SdkVersion
 import java.math.RoundingMode
 import timber.log.Timber
 
@@ -100,7 +101,7 @@ abstract class AppSensorManagerBase : SensorManager {
 
     override suspend fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
         return when {
-            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ->
+            (SdkVersion.isAtLeast(Build.VERSION_CODES.P)) ->
                 listOf(
                     currentVersion,
                     app_rx_gb,
@@ -110,38 +111,33 @@ abstract class AppSensorManagerBase : SensorManager {
                     app_standby_bucket,
                     app_importance,
                 )
-            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ->
-                listOf(
-                    currentVersion,
-                    app_rx_gb,
-                    app_tx_gb,
-                    app_memory,
-                    app_inactive,
-                    app_importance,
-                )
-            else -> listOf(currentVersion, app_rx_gb, app_tx_gb, app_memory, app_importance)
+
+            else -> listOf(
+                currentVersion,
+                app_rx_gb,
+                app_tx_gb,
+                app_memory,
+                app_inactive,
+                app_importance,
+            )
         }
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return emptyArray()
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         val myUid = Process.myUid()
         updateCurrentVersion(context)
         updateAppMemory(context)
         updateAppRxGb(context, myUid)
         updateAppTxGb(context, myUid)
         updateImportanceCheck(context)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val usageStatsManager = context.getSystemService<UsageStatsManager>()!!
-            updateAppInactive(context, usageStatsManager)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                updateAppStandbyBucket(context, usageStatsManager)
-            }
+        val usageStatsManager = context.getSystemService<UsageStatsManager>()!!
+        updateAppInactive(context, usageStatsManager)
+        if (SdkVersion.isAtLeast(Build.VERSION_CODES.P)) {
+            updateAppStandbyBucket(context, usageStatsManager)
         }
     }
 
@@ -227,7 +223,6 @@ abstract class AppSensorManagerBase : SensorManager {
         )
     }
 
-    @RequiresApi(Build.VERSION_CODES.M)
     private suspend fun updateAppInactive(context: Context, usageStatsManager: UsageStatsManager) {
         if (!isEnabled(context, app_inactive)) {
             return

@@ -5,6 +5,7 @@ import com.google.firebase.messaging.RemoteMessage
 import dagger.hilt.android.AndroidEntryPoint
 import io.homeassistant.companion.android.common.data.integration.DeviceRegistration
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.util.MessagingToken
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,11 +45,11 @@ class FirebaseCloudMessagingService : FirebaseMessagingService() {
                 Timber.d("Not trying to update registration since we aren't authenticated.")
                 return@launch
             }
-            serverManager.defaultServers.forEach {
+            serverManager.servers().forEach {
                 launch {
                     try {
                         serverManager.integrationRepository(it.id).updateRegistration(
-                            deviceRegistration = DeviceRegistration(pushToken = token),
+                            deviceRegistration = DeviceRegistration(pushToken = MessagingToken(token)),
                             allowReregistration = false,
                         )
                     } catch (e: Exception) {

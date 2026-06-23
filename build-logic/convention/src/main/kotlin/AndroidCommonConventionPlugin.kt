@@ -1,12 +1,11 @@
 import com.android.build.api.dsl.ApplicationExtension
-import com.android.build.api.dsl.CommonExtension
-import com.android.build.api.dsl.LibraryExtension
+import io.homeassistant.companion.android.androidConfig
 import io.homeassistant.companion.android.getPluginId
+import java.io.File
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.tasks.testing.Test
 import org.gradle.kotlin.dsl.apply
-import org.gradle.kotlin.dsl.configure
 import org.gradle.kotlin.dsl.dependencies
 import org.gradle.kotlin.dsl.withType
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -26,24 +25,38 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 class AndroidCommonConventionPlugin : Plugin<Project> {
     override fun apply(target: Project) {
         with(target) {
-            apply(plugin = libs.plugins.kotlin.android.getPluginId())
             apply(plugin = libs.plugins.kotlin.serialization.getPluginId())
             apply(plugin = libs.plugins.ksp.getPluginId())
             apply(plugin = libs.plugins.hilt.getPluginId())
 
-            fun CommonExtension<*, *, *, *, *, *>.configure() {
+            // We create a resources directory to put `robolectric.properties` and set the SDK version
+            // inspired from https://github.com/PaulWoitaschek/Voice/commit/55505083dd3c3ecfe7b28192d7e9664ebb066399
+            // More info https://github.com/robolectric/robolectric/issues/10103
+            val testResourcesDir = file("build/generated/testResources").apply { mkdirs() }
+
+            androidConfig {
                 compileSdk = libs.versions.androidSdk.compile.get().toInt()
 
-                defaultConfig {
+                with(defaultConfig) {
                     minSdk = libs.versions.androidSdk.min.get().toInt()
                     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+                    val requestedAbis = project.findProperty("abis")
+                        ?.toString()
+                        ?.split(",")
+                        ?.map { it.trim() }
+                        ?.filter { it.isNotEmpty() }
+                        .orEmpty()
+                    if (requestedAbis.isNotEmpty()) {
+                        ndk {
+                            abiFilters.clear()
+                            abiFilters.addAll(requestedAbis)
+                        }
+                    }
                 }
 
-                buildFeatures {
-                    buildConfig = true
-                }
+                buildFeatures.buildConfig = true
 
-                compileOptions {
+                with(compileOptions) {
                     sourceCompatibility(libs.versions.javaVersion.get())
                     targetCompatibility(libs.versions.javaVersion.get())
                     isCoreLibraryDesugaringEnabled = true
@@ -55,10 +68,16 @@ class AndroidCommonConventionPlugin : Plugin<Project> {
                     }
                 }
 
-                testOptions {
+                with(testOptions) {
                     unitTests {
                         isReturnDefaultValues = true
                         isIncludeAndroidResources = true
+                    }
+                }
+
+                with(sourceSets) {
+                    named("test") {
+                        resources.directories += testResourcesDir.path
                     }
                 }
 
@@ -66,7 +85,8 @@ class AndroidCommonConventionPlugin : Plugin<Project> {
                     useJUnitPlatform()
                 }
 
-                lint {
+                with(lint) {
+                    checkReleaseBuilds = false
                     // Lint task should fail if there are issues so the CI doesn't allow addition of lint issue.
                     abortOnError = true
                     // This is an aggressive settings but it helps keeping the code base out of warnings
@@ -95,12 +115,17 @@ class AndroidCommonConventionPlugin : Plugin<Project> {
 
                     "coreLibraryDesugaring"(libs.tools.desugar.jdk)
 
+                    "ksp"(libs.kotlin.metadata.jvm)
+
                     "implementation"(libs.timber)
                     "implementation"(libs.kotlinx.serialization.json)
 
                     "ksp"(libs.hilt.android.compiler)
                     "implementation"(libs.hilt.android)
 
+                    "implementation"(libs.core.ktx)
+
+                    "testCompileOnly"(libs.junit.platform.launcher)
                     "testRuntimeOnly"(libs.junit.platform.launcher)
 
                     "testImplementation"(platform(libs.junit.bom))
@@ -110,24 +135,24 @@ class AndroidCommonConventionPlugin : Plugin<Project> {
                     "testImplementation"(libs.mockk)
                     "testImplementation"(libs.robolectric)
                     "testImplementation"(libs.turbine)
+                    "testImplementation"(libs.hilt.android.testing)
 
                     "testImplementation"(project(":testing-unit"))
-                }
-            }
 
-            when (extensions.findByName("android")) {
-                is ApplicationExtension -> extensions.configure<ApplicationExtension> {
-                    configure()
-                    dependencies {
-                        val noLeakCanary = project.findProperty("noLeakCanary")?.toString()?.ifEmpty { "true" }?.toBoolean() ?: false
+                    if (this@androidConfig is ApplicationExtension) {
+                        val noLeakCanary = project.findProperty("noLeakCanary")?.toString()?.ifEmpty { "true" }
+                            ?.toBoolean() ?: false
 
                         if (!noLeakCanary) {
                             "debugImplementation"(libs.leakcanary.android)
                         }
                     }
                 }
+            }
 
-                is LibraryExtension -> extensions.configure<LibraryExtension> { configure() }
+            File(testResourcesDir, "robolectric.properties").apply {
+                val sdkVersion = libs.versions.robolectric.target.sdk.get().toInt()
+                writeText("sdk=$sdkVersion")
             }
         }
     }

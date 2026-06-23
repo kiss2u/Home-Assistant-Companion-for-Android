@@ -25,7 +25,6 @@ import timber.log.Timber
 /**
  * Get an Action that will toggle the given [todoItem] of a Todo widget once given to Glance.
  */
-@Composable
 internal fun actionToggleTodo(todoItem: TodoItemState): Action {
     return actionRunCallback<ToggleTodoAction>(actionParametersOf(TOGGLE_KEY to todoItem))
 }
@@ -33,7 +32,6 @@ internal fun actionToggleTodo(todoItem: TodoItemState): Action {
 /**
  * Get an Action that will refresh the Todo widget once given to Glance.
  */
-@Composable
 internal fun actionRefreshTodo(): Action {
     return actionRunCallback<RefreshAction>()
 }
@@ -43,7 +41,7 @@ internal fun actionRefreshTodo(): Action {
  */
 @Composable
 internal fun actionOpenTodolist(listEntityId: String, serverId: Int): Action {
-    return actionStartWebView("todo?entity_id=$listEntityId", serverId)
+    return actionStartWebView("todo?entity_id=$listEntityId&add_item=true", serverId)
 }
 
 /**
@@ -56,11 +54,7 @@ internal fun actionOpenTodolist(listEntityId: String, serverId: Int): Action {
  * > Widget must let users manually refresh content, if there is an expectation the data refreshes more frequently than the UI.
  */
 class RefreshAction : ActionCallback {
-    override suspend fun onAction(
-        context: Context,
-        glanceId: GlanceId,
-        parameters: ActionParameters,
-    ) {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         TodoGlanceAppWidget().update(context, glanceId)
     }
 }
@@ -122,6 +116,11 @@ class ToggleTodoAction : ActionCallback {
             return
         }
 
+        if (serverManager.getServer(widgetEntity.serverId) == null) {
+            Timber.w("Aborting the server has been removed, widget needs to be configured again")
+            return
+        }
+
         val result = serverManager.webSocketRepository(widgetEntity.serverId).updateTodo(
             entityId = widgetEntity.entityId,
             todoItem = todoItem.uid,
@@ -130,7 +129,7 @@ class ToggleTodoAction : ActionCallback {
         )
 
         if (!result) {
-            Timber.e("Fail to toggle $todoItem")
+            Timber.e("Failed to toggle $todoItem")
             // We cannot update the UI from an action nor send a toast, we don't have any UI context.
             // TODO we could modify the entry in DB to add the error message
         }

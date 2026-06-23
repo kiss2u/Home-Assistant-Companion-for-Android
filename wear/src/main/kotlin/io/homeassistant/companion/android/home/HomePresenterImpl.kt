@@ -1,9 +1,8 @@
 package io.homeassistant.companion.android.home
 
-import io.homeassistant.companion.android.BuildConfig
+import androidx.work.WorkManager
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.data.authentication.SessionState
-import io.homeassistant.companion.android.common.data.integration.DeviceRegistration
 import io.homeassistant.companion.android.common.data.integration.Entity
 import io.homeassistant.companion.android.common.data.integration.EntityExt
 import io.homeassistant.companion.android.common.data.prefs.WearPrefsRepository
@@ -16,9 +15,10 @@ import io.homeassistant.companion.android.common.data.websocket.impl.entities.De
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.DeviceRegistryUpdatedEvent
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.EntityRegistryResponse
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.EntityRegistryUpdatedEvent
+import io.homeassistant.companion.android.common.util.ResyncRegistrationWorker.Companion.enqueueResyncRegistration
 import io.homeassistant.companion.android.data.SimplifiedEntity
-import io.homeassistant.companion.android.onboarding.getMessagingToken
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,6 +28,7 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 
 class HomePresenterImpl @Inject constructor(
+    private val workManager: WorkManager,
     private val serverManager: ServerManager,
     private val wearPrefsRepository: WearPrefsRepository,
 ) : HomePresenter {
@@ -59,7 +60,7 @@ class HomePresenterImpl @Inject constructor(
     override fun onViewReady() {
         mainScope.launch {
             // Remove any invalid servers (incomplete, partly migrated from another device)
-            serverManager.defaultServers
+            serverManager.servers()
                 .filter { serverManager.authenticationRepository(it.id).getSessionState() == SessionState.ANONYMOUS }
                 .forEach { serverManager.removeServer(it.id) }
 
@@ -67,7 +68,7 @@ class HomePresenterImpl @Inject constructor(
                 serverManager.isRegistered() &&
                 serverManager.authenticationRepository().getSessionState() == SessionState.CONNECTED
             ) {
-                resyncRegistration()
+                workManager.enqueueResyncRegistration()
             } else {
                 view.displayOnBoarding()
             }
@@ -94,6 +95,7 @@ class HomePresenterImpl @Inject constructor(
                     "lock"
                 }
             }
+
             in EntityExt.DOMAINS_TOGGLE -> "toggle"
             else -> "turn_on"
         }
@@ -178,56 +180,85 @@ class HomePresenterImpl @Inject constructor(
         mainScope.cancel()
     }
 
-    private fun resyncRegistration() {
-        serverManager.defaultServers.forEach {
-            mainScope.launch {
-                try {
-                    serverManager.integrationRepository(it.id).updateRegistration(
-                        DeviceRegistration(
-                            "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-                            null,
-                            getMessagingToken(),
-                            false,
-                        ),
-                    )
-                    serverManager.webSocketRepository(it.id).getCurrentUser() // Update cached data
-                } catch (e: Exception) {
-                    Timber.e(e, "Issue updating Registration")
-                }
-            }
+    override suspend fun isConnected(): Boolean = serverManager.isRegistered()
+
+    override suspend fun getServerId(): Int? = serverManager.getServer()?.id
+
+    override suspend fun getWebSocketState(): WebSocketState? {
+        return try {
+            serverManager.webSocketRepository().getConnectionState()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to get WebSocketState")
+            null
         }
     }
 
-    override fun isConnected(): Boolean = serverManager.isRegistered()
-
-    override fun getServerId(): Int? = serverManager.getServer()?.id
-
-    override fun getWebSocketState(): WebSocketState? {
-        return serverManager.webSocketRepository().getConnectionState()
-    }
-
     override suspend fun getAreaRegistry(): List<AreaRegistryResponse>? {
-        return serverManager.webSocketRepository().getAreaRegistry()
+        return try {
+            serverManager.webSocketRepository().getAreaRegistry()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to get area registry")
+            null
+        }
     }
 
     override suspend fun getDeviceRegistry(): List<DeviceRegistryResponse>? {
-        return serverManager.webSocketRepository().getDeviceRegistry()
+        return try {
+            serverManager.webSocketRepository().getDeviceRegistry()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to get device registry")
+            null
+        }
     }
 
     override suspend fun getEntityRegistry(): List<EntityRegistryResponse>? {
-        return serverManager.webSocketRepository().getEntityRegistry()
+        return try {
+            serverManager.webSocketRepository().getEntityRegistry()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to get entity registry")
+            null
+        }
     }
 
     override suspend fun getAreaRegistryUpdates(): Flow<AreaRegistryUpdatedEvent>? {
-        return serverManager.webSocketRepository().getAreaRegistryUpdates()
+        return try {
+            serverManager.webSocketRepository().getAreaRegistryUpdates()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to get area registry updates")
+            null
+        }
     }
 
     override suspend fun getDeviceRegistryUpdates(): Flow<DeviceRegistryUpdatedEvent>? {
-        return serverManager.webSocketRepository().getDeviceRegistryUpdates()
+        return try {
+            serverManager.webSocketRepository().getDeviceRegistryUpdates()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to get device registry updates")
+            null
+        }
     }
 
     override suspend fun getEntityRegistryUpdates(): Flow<EntityRegistryUpdatedEvent>? {
-        return serverManager.webSocketRepository().getEntityRegistryUpdates()
+        return try {
+            serverManager.webSocketRepository().getEntityRegistryUpdates()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to get entity registry updates")
+            null
+        }
     }
 
     override suspend fun getAllTileShortcuts(): Map<Int?, List<SimplifiedEntity>> {

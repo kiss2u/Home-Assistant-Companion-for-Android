@@ -2,6 +2,7 @@ package io.homeassistant.companion.android.widgets.assist
 
 import android.app.Application
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
@@ -9,19 +10,20 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.homeassistant.companion.android.common.data.servers.ServerManager
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.AssistPipelineListResponse
+import io.homeassistant.companion.android.database.server.Server
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import timber.log.Timber
 
 @HiltViewModel
-class AssistShortcutViewModel @Inject constructor(
-    val serverManager: ServerManager,
-    application: Application,
-) : AndroidViewModel(application) {
+class AssistShortcutViewModel @Inject constructor(val serverManager: ServerManager, application: Application) :
+    AndroidViewModel(application) {
 
-    var serverId by mutableStateOf(ServerManager.SERVER_ID_ACTIVE)
+    var serverId by mutableIntStateOf(ServerManager.SERVER_ID_ACTIVE)
         private set
 
-    var servers by mutableStateOf(serverManager.defaultServers)
+    var servers by mutableStateOf(emptyList<Server>())
         private set
 
     var supported by mutableStateOf<Boolean?>(null)
@@ -31,11 +33,14 @@ class AssistShortcutViewModel @Inject constructor(
         private set
 
     init {
-        if (serverManager.isRegistered()) {
-            serverManager.getServer()?.id?.let { serverId = it }
-            getData()
-        } else {
-            supported = false
+        viewModelScope.launch {
+            servers = serverManager.servers()
+            if (serverManager.isRegistered()) {
+                serverManager.getServer()?.id?.let { serverId = it }
+                getData()
+            } else {
+                supported = false
+            }
         }
     }
 
@@ -52,11 +57,27 @@ class AssistShortcutViewModel @Inject constructor(
             supported = null
             pipelines = null
 
+            val config = try {
+                serverManager.webSocketRepository(serverId).getConfig()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to get config")
+                null
+            }
+
             // Update data
             supported = serverManager.getServer(serverId)?.version?.isAtLeast(2023, 5) == true &&
-                serverManager.webSocketRepository(serverId).getConfig()?.components?.contains("assist_pipeline") == true
+                config?.components?.contains("assist_pipeline") == true
             if (supported == true) {
-                pipelines = serverManager.webSocketRepository(serverId).getAssistPipelines()
+                pipelines = try {
+                    serverManager.webSocketRepository(serverId).getAssistPipelines()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to get assist pipelines")
+                    null
+                }
             }
         }
     }

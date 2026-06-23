@@ -34,28 +34,19 @@ class AndroidOsSensorManager : SensorManager {
         get() = commonR.string.sensor_name_android_os
 
     override suspend fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            listOf(osVersion, osSecurityPatch)
-        } else {
-            listOf(osVersion)
-        }
+        return listOf(osVersion, osSecurityPatch)
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return arrayOf()
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         checkState(context, osVersion)
         checkState(context, osSecurityPatch)
     }
 
-    private suspend fun checkState(
-        context: Context,
-        sensor: SensorManager.BasicSensor,
-    ) {
+    private suspend fun checkState(context: Context, sensor: SensorManager.BasicSensor) {
         if (!isEnabled(context, sensor)) {
             return
         }
@@ -65,14 +56,8 @@ class AndroidOsSensorManager : SensorManager {
             sensor,
             when (sensor.id) {
                 osVersion.id -> Build.VERSION.RELEASE
-                osSecurityPatch.id -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    Build.VERSION.SECURITY_PATCH
-                } else {
-                    STATE_UNKNOWN
-                }
-                else -> {
-                    STATE_UNKNOWN
-                }
+                osSecurityPatch.id -> Build.VERSION.SECURITY_PATCH
+                else -> STATE_UNKNOWN
             },
             sensor.statelessIcon,
             mapOf(),

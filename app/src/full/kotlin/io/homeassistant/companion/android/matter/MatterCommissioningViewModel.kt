@@ -4,12 +4,14 @@ import android.app.Application
 import android.content.IntentSender
 import androidx.activity.result.ActivityResult
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.thread.ThreadManager
 import javax.inject.Inject
 import kotlinx.coroutines.launch
@@ -37,7 +39,10 @@ class MatterCommissioningViewModel @Inject constructor(
     var step by mutableStateOf<CommissioningFlowStep>(CommissioningFlowStep.NotStarted)
         private set
 
-    var serverId by mutableStateOf(0)
+    var serverId by mutableIntStateOf(0)
+        private set
+
+    var servers by mutableStateOf<List<Server>>(emptyList())
         private set
 
     fun checkSetup(isNewDevice: Boolean) {
@@ -52,8 +57,8 @@ class MatterCommissioningViewModel @Inject constructor(
                 step = CommissioningFlowStep.NotRegistered
                 return@launch
             }
-
-            if (serverManager.defaultServers.size > 1) {
+            servers = serverManager.servers()
+            if (servers.size > 1) {
                 step = CommissioningFlowStep.SelectServer
             } else {
                 serverManager.getServer()?.id?.let {

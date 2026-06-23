@@ -1,7 +1,6 @@
 package io.homeassistant.companion.android.settings.wear.views
 
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.IconButton
 import androidx.compose.material.TopAppBar
@@ -13,6 +12,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
+import androidx.core.net.toUri
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -33,10 +33,15 @@ fun LoadSettingsHomeView(
     deviceName: String,
     loginWearOs: () -> Unit,
     onStartBackClicked: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     HomeAssistantAppTheme {
         val navController = rememberNavController()
-        NavHost(navController = navController, startDestination = SettingsWearMainView.LANDING) {
+        NavHost(
+            navController = navController,
+            startDestination = SettingsWearMainView.LANDING,
+            modifier = modifier,
+        ) {
             composable(SettingsWearMainView.FAVORITES) {
                 LoadWearFavoritesSettings(
                     settingsWearViewModel = settingsWearViewModel,
@@ -105,12 +110,13 @@ fun LoadSettingsHomeView(
 fun SettingsWearTopAppBar(
     title: @Composable () -> Unit,
     onBackClicked: () -> Unit,
+    modifier: Modifier = Modifier,
     docsLink: String? = null,
 ) {
     val context = LocalContext.current
     TopAppBar(
         title = title,
-        modifier = Modifier.windowInsetsPadding(safeTopWindowInsets()),
+        modifier = modifier.windowInsetsPadding(safeTopWindowInsets()),
         navigationIcon = {
             IconButton(onClick = onBackClicked) {
                 Image(
@@ -121,10 +127,12 @@ fun SettingsWearTopAppBar(
         },
         actions = {
             if (!docsLink.isNullOrBlank()) {
-                IconButton(onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(docsLink))
-                    context.startActivity(intent)
-                }) {
+                IconButton(
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, docsLink.toUri())
+                        context.startActivity(intent)
+                    },
+                ) {
                     Image(
                         asset = CommunityMaterial.Icon2.cmd_help_circle_outline,
                         contentDescription = stringResource(commonR.string.help),

@@ -5,30 +5,46 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
+import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
+import dagger.hilt.android.lifecycle.withCreationCallback
 import io.homeassistant.companion.android.BaseActivity
+import io.homeassistant.companion.android.assist.service.AssistVoiceInteractionService
 import io.homeassistant.companion.android.assist.ui.AssistSheetView
 import io.homeassistant.companion.android.common.assist.AssistViewModelBase
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.launch.LaunchActivity
 import io.homeassistant.companion.android.util.compose.HomeAssistantAppTheme
 import io.homeassistant.companion.android.webview.WebViewActivity
+import javax.inject.Inject
+import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class AssistActivity : BaseActivity() {
 
-    private val viewModel: AssistViewModel by viewModels()
+    @Inject
+    lateinit var audioStrategyFactory: AssistAudioStrategyFactory
+
+    private val wakeWordPhrase: String? by lazy {
+        intent.getStringExtra(EXTRA_FROM_WAKE_WORD_PHRASE)
+    }
+
+    private val viewModel: AssistViewModel by viewModels(
+        extrasProducer = {
+            defaultViewModelCreationExtras.withCreationCallback<AssistViewModel.Factory> { factory ->
+                factory.create(audioStrategyFactory.create(applicationContext, wakeWordPhrase))
+            }
+        },
+    )
 
     private var contextIsLocked = true
 
@@ -37,6 +53,7 @@ class AssistActivity : BaseActivity() {
         private const val EXTRA_PIPELINE = "pipeline"
         private const val EXTRA_START_LISTENING = "start_listening"
         private const val EXTRA_FROM_FRONTEND = "from_frontend"
+        private const val EXTRA_FROM_WAKE_WORD_PHRASE = "from_wake_word_phrase"
 
         fun newInstance(
             context: Context,
@@ -44,33 +61,32 @@ class AssistActivity : BaseActivity() {
             pipelineId: String? = null,
             startListening: Boolean = true,
             fromFrontend: Boolean = true,
+            wakeWordPhrase: String? = null,
         ): Intent {
             return Intent(context, AssistActivity::class.java).apply {
                 putExtra(EXTRA_SERVER, serverId)
                 putExtra(EXTRA_PIPELINE, pipelineId)
                 putExtra(EXTRA_START_LISTENING, startListening)
                 putExtra(EXTRA_FROM_FRONTEND, fromFrontend)
+                putExtra(EXTRA_FROM_WAKE_WORD_PHRASE, wakeWordPhrase)
             }
         }
     }
 
     private val requestPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
-        { viewModel.onPermissionResult(it) },
-    )
+    ) { viewModel.onPermissionResult(it) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge(
-            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
-        )
         super.onCreate(savedInstanceState)
         updateShowWhenLocked()
 
         if (savedInstanceState == null) {
-            if (!viewModel.isRegistered()) {
-                startActivity(Intent(this, LaunchActivity::class.java))
-                finish()
-                return
+            lifecycleScope.launch {
+                if (!viewModel.isRegistered()) {
+                    startActivity(Intent(this@AssistActivity, LaunchActivity::class.java))
+                    finish()
+                }
             }
 
             viewModel.onCreate(
@@ -93,12 +109,22 @@ class AssistActivity : BaseActivity() {
                 } else {
                     null
                 },
+                wakeWordPhrase = intent.getStringExtra(EXTRA_FROM_WAKE_WORD_PHRASE),
             )
         }
 
         val fromFrontend = intent.getBooleanExtra(EXTRA_FROM_FRONTEND, false)
 
         setContent {
+            if (viewModel.shouldFinish) {
+                finish()
+                return@setContent
+            }
+
+            if (viewModel.pendingWakeWordConfirmation) {
+                return@setContent
+            }
+
             HomeAssistantAppTheme {
                 AssistSheetView(
                     conversation = viewModel.conversation,
@@ -108,7 +134,7 @@ class AssistActivity : BaseActivity() {
                     currentPipeline = viewModel.currentPipeline,
                     onSelectPipeline = viewModel::changePipeline,
                     onManagePipelines =
-                    if (fromFrontend && viewModel.userCanManagePipelines()) {
+                    if (fromFrontend && viewModel.userCanManagePipelines) {
                         {
                             startActivity(
                                 WebViewActivity.newInstance(
@@ -134,7 +160,9 @@ class AssistActivity : BaseActivity() {
 
     override fun onResume() {
         super.onResume()
-        viewModel.setPermissionInfo(hasRecordingPermission()) { requestPermission.launch(Manifest.permission.RECORD_AUDIO) }
+        viewModel.setPermissionInfo(hasRecordingPermission()) {
+            requestPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
 
     override fun onPause() {
@@ -145,6 +173,9 @@ class AssistActivity : BaseActivity() {
     override fun onDestroy() {
         super.onDestroy()
         viewModel.onDestroy()
+        // This is a safety net: if the listener did not properly start, we still want to
+        // resume.
+        AssistVoiceInteractionService.resumeListening(this)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -162,7 +193,7 @@ class AssistActivity : BaseActivity() {
         contextIsLocked = locked
         if (locked) {
             window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.O) {
+            if (!SdkVersion.isAtLeast(Build.VERSION_CODES.O_MR1)) {
                 @Suppress("DEPRECATION")
                 window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
             } else {
@@ -170,7 +201,7 @@ class AssistActivity : BaseActivity() {
                 setTurnScreenOn(true)
             }
         } else {
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.O) {
+            if (!SdkVersion.isAtLeast(Build.VERSION_CODES.O_MR1)) {
                 @Suppress("DEPRECATION")
                 window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
             } else {

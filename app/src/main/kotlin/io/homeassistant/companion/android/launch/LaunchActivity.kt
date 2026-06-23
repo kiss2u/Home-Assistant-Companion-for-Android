@@ -1,280 +1,348 @@
 package io.homeassistant.companion.android.launch
 
+import android.app.PictureInPictureParams
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.Parcelable
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material.CircularProgressIndicator
-import androidx.compose.ui.Alignment
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult.ActionPerformed
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
+import androidx.core.content.IntentCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.WindowInsetsCompat.Type.systemBars
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavController
+import androidx.navigation.compose.rememberNavController
 import dagger.hilt.android.AndroidEntryPoint
-import io.homeassistant.companion.android.BuildConfig
+import dagger.hilt.android.lifecycle.withCreationCallback
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
+import io.homeassistant.companion.android.WIPFeature
+import io.homeassistant.companion.android.authenticator.Authenticator
+import io.homeassistant.companion.android.authenticator.Authenticator.Companion.AuthenticationResult
 import io.homeassistant.companion.android.common.R as commonR
-import io.homeassistant.companion.android.common.data.integration.DeviceRegistration
-import io.homeassistant.companion.android.common.data.servers.ServerManager
-import io.homeassistant.companion.android.database.sensor.SensorDao
-import io.homeassistant.companion.android.database.server.Server
-import io.homeassistant.companion.android.database.server.ServerConnectionInfo
-import io.homeassistant.companion.android.database.server.ServerSessionInfo
-import io.homeassistant.companion.android.database.server.ServerType
-import io.homeassistant.companion.android.database.server.ServerUserInfo
-import io.homeassistant.companion.android.database.settings.WebsocketSetting
-import io.homeassistant.companion.android.onboarding.OnboardApp
-import io.homeassistant.companion.android.onboarding.getMessagingToken
-import io.homeassistant.companion.android.sensors.LocationSensorManager
-import io.homeassistant.companion.android.settings.SettingViewModel
-import io.homeassistant.companion.android.settings.server.ServerChooserFragment
-import io.homeassistant.companion.android.util.UrlUtil
-import io.homeassistant.companion.android.util.compose.HomeAssistantAppTheme
-import io.homeassistant.companion.android.webview.WebViewActivity
+import io.homeassistant.companion.android.common.compose.theme.HATheme
+import io.homeassistant.companion.android.common.util.CheckLocalNetworkPermissionUseCase
+import io.homeassistant.companion.android.common.util.SdkVersion
+import io.homeassistant.companion.android.launch.applock.HazeLockOverlay
+import io.homeassistant.companion.android.sensors.SensorReceiver
+import io.homeassistant.companion.android.sensors.SensorWorker
+import io.homeassistant.companion.android.util.ChangeLog
+import io.homeassistant.companion.android.util.CheckLocationDisabledUseCase
+import io.homeassistant.companion.android.util.PLAY_SERVICES_FLAVOR_DOC_URL
+import io.homeassistant.companion.android.util.PlayServicesAvailability
+import io.homeassistant.companion.android.util.compose.HAApp
+import io.homeassistant.companion.android.util.compose.navigateToUri
+import io.homeassistant.companion.android.util.enableEdgeToEdgeCompat
+import io.homeassistant.companion.android.websocket.WebsocketManager
 import javax.inject.Inject
-import javax.net.ssl.SSLException
-import javax.net.ssl.SSLHandshakeException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import retrofit2.HttpException
-import timber.log.Timber
+import kotlinx.parcelize.Parcelize
 
-private const val EXTRA_SERVER_URL_TO_ONBOARD = "extra_server_url_to_onboard"
+private const val DEEP_LINK_KEY = "deep_link_key"
 
+/**
+ * Fully qualified class name of the non-exported `<activity-alias>` declared in the manifest.
+ *
+ * Trusted in-process callers route through this alias to bring up the dashboard over the
+ * keyguard. [LaunchActivity.onCreate] only calls [android.app.Activity.setShowWhenLocked] when
+ * the inbound intent's component matches it — because the alias is `android:exported="false"`,
+ * external apps cannot use it and therefore cannot force the activity to render over the lock
+ * screen by themselves.
+ */
+private const val LOCK_SCREEN_ALIAS_CLASS = "io.homeassistant.companion.android.launch.LaunchOverLockScreen"
+
+/**
+ * Main entry point of the application, responsible for holding the whole navigation graph
+ * and triggering lifecycle-based refresh of background work.
+ *
+ * It also handles the splash screen display based on a condition exposed by the [LaunchViewModel].
+ *
+ * On resume, refreshes the scheduling of periodic sensor collection via [SensorWorker]
+ * and the background WebSocket work via [WebsocketManager].
+ * These jobs are managed outside the Activity and may continue beyond this lifecycle.
+ * On pause, triggers an immediate sensor update via [SensorReceiver] so the server
+ * has fresh data before the app goes to the background.
+ */
 @AndroidEntryPoint
-class LaunchActivity : AppCompatActivity(), LaunchView {
+class LaunchActivity : AppCompatActivity() {
+    @Inject
+    internal lateinit var playServicesAvailability: PlayServicesAvailability
+
+    @Inject
+    internal lateinit var checkLocationDisabled: CheckLocationDisabledUseCase
+
+    @Inject
+    internal lateinit var checkLocalNetworkPermission: CheckLocalNetworkPermissionUseCase
+
+    @Inject
+    internal lateinit var changeLog: ChangeLog
+
+    /**
+     * Represents deep link actions that can be passed to [LaunchActivity] to navigate to specific destinations.
+     */
+    @Parcelize
+    sealed interface DeepLink : Parcelable {
+        /**
+         * Opens the onboarding flow for a new Home Assistant server.
+         * @property urlToOnboard Optional server URL to connect to directly. If null, shows server discovery.
+         * @property hideExistingServers When true, hides already registered servers from discovery results.
+         * @property skipWelcome When true, skips the welcome screen and navigates directly to server discovery,
+         *  or to the connection screen if [urlToOnboard] is provided.
+         */
+        data class OpenOnboarding(
+            val urlToOnboard: String?,
+            val hideExistingServers: Boolean,
+            val skipWelcome: Boolean,
+        ) : DeepLink
+
+        /**
+         * Opens the onboarding flow from an invitation link.
+         *
+         * @property serverUrl The Home Assistant server URL the invitation wants to connect to.
+         */
+        data class OpenInvitation(val serverUrl: String) : DeepLink
+
+        /**
+         * Navigates to a specific path within the webview.
+         * @property path The path to navigate to within the Home Assistant interface.
+         * @property serverId The ID of the server to use for navigation.
+         */
+        data class NavigateTo(val path: String?, val serverId: Int) : DeepLink
+
+        /**
+         * Opens the Wear OS device onboarding flow.
+         * @property wearName The name of the Wear device being onboarded.
+         * @property urlToOnboard Optional server URL to connect to directly. If null, shows server discovery.
+         */
+        data class OpenWearOnboarding(val wearName: String, val urlToOnboard: String?) : DeepLink
+    }
 
     companion object {
-        fun newInstance(context: Context, serverUrlToOnboard: String): Intent {
-            return Intent(context, LaunchActivity::class.java).apply {
-                putExtra(EXTRA_SERVER_URL_TO_ONBOARD, serverUrlToOnboard)
+        /**
+         * Builds an intent to start [LaunchActivity].
+         *
+         * @param showWhenLocked when `true`, routes through the non-exported
+         *   `LaunchOverLockScreen` activity-alias so the dashboard renders over the keyguard.
+         *   Intended for trusted in-process callers (e.g. the device controls panel) — external
+         *   apps cannot reach the alias and therefore cannot opt into this behavior.
+         */
+        fun newInstance(context: Context, deepLink: DeepLink? = null, showWhenLocked: Boolean = false): Intent {
+            return Intent().apply {
+                component = if (showWhenLocked) {
+                    ComponentName(context, LOCK_SCREEN_ALIAS_CLASS)
+                } else {
+                    ComponentName(context, LaunchActivity::class.java)
+                }
+                if (deepLink != null) {
+                    putExtra(DEEP_LINK_KEY, deepLink)
+                }
             }
         }
     }
 
-    @Inject
-    lateinit var presenter: LaunchPresenter
-
-    @Inject
-    lateinit var serverManager: ServerManager
-
-    @Inject
-    lateinit var sensorDao: SensorDao
-
-    private val mainScope = CoroutineScope(Dispatchers.Main + Job())
-
-    private val settingViewModel: SettingViewModel by viewModels()
-
-    private val registerActivityResult = registerForActivityResult(
-        OnboardApp(),
-        this::onOnboardingComplete,
+    private val viewModel: LaunchViewModel by viewModels(
+        extrasProducer = {
+            defaultViewModelCreationExtras.withCreationCallback<LaunchViewModelFactory> {
+                it.create(IntentCompat.getParcelableExtra(intent, DEEP_LINK_KEY, DeepLink::class.java))
+            }
+        },
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Must run before super.onCreate so the window flag is set before the platform decides
+        // whether to draw over the keyguard. Gated on the non-exported [LOCK_SCREEN_ALIAS_CLASS]
+        // so external apps reaching the public LAUNCHER intent-filter cannot force this on.
+        if (SdkVersion.isAtLeast(Build.VERSION_CODES.O_MR1) &&
+            intent.component?.className == LOCK_SCREEN_ALIAS_CLASS
+        ) {
+            setShowWhenLocked(true)
+        }
+
         super.onCreate(savedInstanceState)
+        val splashScreen = installSplashScreen()
+
+        splashScreen.setKeepOnScreenCondition {
+            viewModel.shouldShowSplashScreen()
+        }
+
+        enableEdgeToEdgeCompat()
+
         setContent {
-            Box(modifier = Modifier.fillMaxSize()) {
-                HomeAssistantAppTheme {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                }
-            }
-        }
-        presenter.onViewReady(intent.getStringExtra(EXTRA_SERVER_URL_TO_ONBOARD))
-    }
+            HATheme {
+                val navController = rememberNavController()
+                val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                val isFullScreen by viewModel.isFullScreen.collectAsStateWithLifecycle()
+                val isAppLocked by viewModel.isAppLocked.collectAsStateWithLifecycle()
+                val hazeState = rememberHazeState(blurEnabled = isAppLocked)
+                val snackbarHostState = remember { SnackbarHostState() }
 
-    override fun displayWebview() {
-        presenter.setSessionExpireMillis(0)
+                FullscreenEffect(isFullScreen = isFullScreen)
 
-        if (packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE) && BuildConfig.FLAVOR == "full") {
-            val carIntent = Intent(
-                this,
-                Class.forName("androidx.car.app.activity.CarAppActivity"),
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(carIntent)
-        } else if (presenter.hasMultipleServers() && intent.data?.path?.isNotBlank() == true) {
-            var serverParameter: Int? = null
-            if (intent.data?.queryParameterNames.orEmpty().contains("server")) {
-                val serverName = intent.data?.getQueryParameter("server").takeIf { !it.isNullOrBlank() }
-                if (serverName == "default" || serverName == null) {
-                    serverParameter = serverManager.getServer()?.id
-                } else {
-                    serverManager.defaultServers
-                        .firstOrNull { it.friendlyName.equals(serverName, ignoreCase = true) }
-                        ?.let {
-                            serverParameter = it.id
-                        }
-                }
-            }
-
-            if (serverParameter != null) {
-                startActivity(WebViewActivity.newInstance(this, intent.data?.path, serverParameter))
-            } else { // Show server chooser
-                supportFragmentManager.setFragmentResultListener(ServerChooserFragment.RESULT_KEY, this) { _, bundle ->
-                    val serverId = if (bundle.containsKey(ServerChooserFragment.RESULT_SERVER)) {
-                        bundle.getInt(ServerChooserFragment.RESULT_SERVER)
-                    } else {
-                        null
-                    }
-                    supportFragmentManager.clearFragmentResultListener(ServerChooserFragment.RESULT_KEY)
-                    startActivity(WebViewActivity.newInstance(this, intent.data?.path, serverId))
-                    finish()
-                    overridePendingTransition(0, 0) // Disable activity start/stop animation
-                }
-                ServerChooserFragment().show(supportFragmentManager, ServerChooserFragment.TAG)
-                return
-            }
-        } else {
-            startActivity(WebViewActivity.newInstance(this, intent.data?.path))
-        }
-        finish()
-        overridePendingTransition(0, 0) // Disable activity start/stop animation
-    }
-
-    override fun displayOnBoarding(sessionConnected: Boolean, serverUrlToOnboard: String?) {
-        registerActivityResult.launch(OnboardApp.Input(url = serverUrlToOnboard))
-    }
-
-    override fun onDestroy() {
-        presenter.onFinish()
-        super.onDestroy()
-    }
-
-    private fun onOnboardingComplete(result: OnboardApp.Output?) {
-        mainScope.launch {
-            if (result != null) {
-                val (url, authCode, deviceName, deviceTrackingEnabled, notificationsEnabled) = result
-                val messagingToken = getMessagingToken()
-//                if (messagingToken.isBlank() && BuildConfig.FLAVOR == "full") {
-//                    AlertDialog.Builder(this@LaunchActivity)
-//                        .setTitle(commonR.string.firebase_error_title)
-//                        .setMessage(commonR.string.firebase_error_message)
-//                        .setPositiveButton(commonR.string.continue_connect) { _, _ ->
-//                            mainScope.launch {
-//                                registerAndOpenWebview(
-//                                    url,
-//                                    authCode,
-//                                    deviceName,
-//                                    messagingToken,
-//                                    deviceTrackingEnabled,
-//                                    notificationsEnabled
-//                                )
-//                            }
-//                        }
-//                        .show()
-//                } else {
-                registerAndOpenWebview(
-                    url,
-                    authCode,
-                    deviceName,
-                    messagingToken,
-                    deviceTrackingEnabled,
-                    notificationsEnabled
+                MissingPlayServicesNotice(
+                    isMissingRequiredPlayServices = playServicesAvailability.isMissingRequiredPlayServices(),
+                    snackbarHostState = snackbarHostState,
+                    navController = navController,
                 )
-                // }
-            } else {
-                Timber.e("onOnboardingComplete: Activity result returned null intent data")
+
+                HAApp(
+                    navController = navController,
+                    startDestination = (uiState as? LaunchUiState.Ready)?.startDestination,
+                    snackbarHostState = snackbarHostState,
+                    onRequestFullscreen = viewModel::onFullscreenRequested,
+                    onPipReadinessChanged = viewModel::onPipReadinessChanged,
+                    modifier = Modifier.hazeSource(hazeState),
+                )
+
+                // We don't apply the overlay on top of the dialogs
+                HazeLockOverlay(hazeState)
+
+                when (uiState) {
+                    LaunchUiState.NetworkUnavailable -> NetworkUnavailableDialog(onBackClick = ::finish)
+                    LaunchUiState.WearUnsupported -> WearUnsupportedDialog(onBackClick = ::finish)
+                    LaunchUiState.Loading, is LaunchUiState.Ready -> {
+                        AppLockEffect(
+                            isAppLocked = isAppLocked,
+                            onAuthSucceeded = viewModel::onAuthenticated,
+                        )
+                    }
+                }
             }
         }
     }
 
-    private suspend fun registerAndOpenWebview(
-        url: String,
-        authCode: String,
-        deviceName: String,
-        messagingToken: String,
-        deviceTrackingEnabled: Boolean,
-        notificationsEnabled: Boolean,
-    ) {
-        var serverId: Int? = null
-        try {
-            val formattedUrl = UrlUtil.formattedUrlString(url)
-            val server = Server(
-                _name = "",
-                type = ServerType.TEMPORARY,
-                connection = ServerConnectionInfo(
-                    externalUrl = formattedUrl,
-                ),
-                session = ServerSessionInfo(),
-                user = ServerUserInfo(),
-            )
-            serverId = serverManager.addServer(server)
-            serverManager.authenticationRepository(serverId).registerAuthorizationCode(authCode)
-            serverManager.integrationRepository(serverId).registerDevice(
-                DeviceRegistration(
-                    "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-                    deviceName,
-                    messagingToken,
-                ),
-            )
-            serverId = serverManager.convertTemporaryServer(serverId)
-        } catch (e: Exception) {
-            // Fatal errors: if one of these calls fail, the app cannot proceed.
-            // Show an error, clean up the session and require new registration.
-            // Because this runs after the webview, the only expected errors are:
-            // - missing mobile_app integration
-            // - system version related in OkHttp (cryptography)
-            // - general connection issues (offline/unknown)
-            Timber.e(e, "Exception while registering")
-            try {
-                if (serverId != null) {
-                    serverManager.authenticationRepository(serverId).revokeSession()
-                    serverManager.removeServer(serverId)
-                }
-            } catch (e: Exception) {
-                Timber.e(e, "Can't revoke session")
+    override fun onStart() {
+        super.onStart()
+        if (WIPFeature.USE_FRONTEND_V2) {
+            viewModel.refreshAppLockState()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (WIPFeature.USE_FRONTEND_V2) {
+            SensorWorker.start(this)
+            lifecycleScope.launch {
+                WebsocketManager.start(this@LaunchActivity)
+                checkLocationDisabled()
+                checkLocalNetworkPermission()
+                changeLog.showChangeLog(this@LaunchActivity, forceShow = false)
             }
-            AlertDialog.Builder(this@LaunchActivity)
-                .setTitle(commonR.string.error_connection_failed)
-                .setMessage(
-                    when {
-                        e is HttpException && e.code() == 404 -> commonR.string.error_with_registration
-                        e is SSLHandshakeException -> commonR.string.webview_error_FAILED_SSL_HANDSHAKE
-                        e is SSLException -> commonR.string.webview_error_SSL_INVALID
-                        else -> commonR.string.webview_error
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (!isFinishing && WIPFeature.USE_FRONTEND_V2) SensorReceiver.updateAllSensors(this)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (WIPFeature.USE_FRONTEND_V2) {
+            viewModel.onAppPaused()
+
+            if (!SdkVersion.isAtLeast(Build.VERSION_CODES.O)) return
+            if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
+            val readiness = viewModel.pipReadiness.value ?: return
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(readiness.aspectRatio)
+                .apply { readiness.sourceRect?.let(::setSourceRectHint) }
+                .build()
+            enterPictureInPictureMode(params)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (WIPFeature.USE_FRONTEND_V2) {
+            viewModel.onAppPaused()
+        }
+    }
+}
+
+/**
+ * Triggers biometric authentication when the app is locked.
+ *
+ * Launches the system biometric prompt when [isAppLocked] becomes `true`.
+ * On success, calls [onAuthSucceeded] to unlock. On user cancel, closes the app.
+ */
+@Composable
+private fun AppLockEffect(isAppLocked: Boolean, onAuthSucceeded: () -> Unit) {
+    val activity = LocalActivity.current as? FragmentActivity ?: return
+    val biometricTitle = stringResource(commonR.string.biometric_title)
+    val authenticator = remember {
+        Authenticator(activity) { result ->
+            when (result) {
+                AuthenticationResult.ERROR, AuthenticationResult.CANCELED -> activity.finishAffinity()
+                AuthenticationResult.SUCCESS -> onAuthSucceeded()
+            }
+        }
+    }
+
+    LaunchedEffect(isAppLocked) {
+        if (isAppLocked) {
+            authenticator.authenticate(biometricTitle)
+        }
+    }
+}
+
+@Composable
+private fun FullscreenEffect(isFullScreen: Boolean) {
+    val view = LocalView.current
+    val window = LocalActivity.current?.window ?: return
+    LaunchedEffect(isFullScreen) {
+        val controller = WindowInsetsControllerCompat(window, view)
+        if (isFullScreen) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(systemBars())
+        } else {
+            controller.show(systemBars())
+        }
+    }
+}
+
+@Composable
+private fun MissingPlayServicesNotice(
+    isMissingRequiredPlayServices: Boolean,
+    snackbarHostState: SnackbarHostState,
+    navController: NavController,
+) {
+    if (isMissingRequiredPlayServices) {
+        val message = stringResource(commonR.string.play_services_unavailable_full_flavor)
+        val learnMore = stringResource(commonR.string.learn_more)
+        LaunchedEffect(message) {
+            if (snackbarHostState.showSnackbar(
+                    message = message,
+                    duration = SnackbarDuration.Long,
+                    actionLabel = learnMore,
+                ) == ActionPerformed
+            ) {
+                navController.navigateToUri(
+                    uri = PLAY_SERVICES_FLAVOR_DOC_URL,
+                    onShowSnackbar = { snackbarMessage, action ->
+                        snackbarHostState.showSnackbar(snackbarMessage, action) == ActionPerformed
                     },
                 )
-                .setCancelable(false)
-                .setPositiveButton(commonR.string.ok) { dialog, _ ->
-                    dialog.dismiss()
-                    displayOnBoarding(false)
-                }
-                .show()
-            return
-        }
-        serverId?.let {
-            setLocationTracking(serverId, deviceTrackingEnabled)
-            setNotifications(serverId, notificationsEnabled)
-        }
-        displayWebview()
-    }
-
-    private suspend fun setLocationTracking(serverId: Int, enabled: Boolean) {
-        sensorDao.setSensorsEnabled(
-            sensorIds = listOf(
-                LocationSensorManager.backgroundLocation.id,
-                LocationSensorManager.zoneLocation.id,
-                LocationSensorManager.singleAccurateLocation.id,
-            ),
-            serverId = serverId,
-            enabled = enabled,
-        )
-    }
-
-    private fun setNotifications(serverId: Int, enabled: Boolean) {
-        // Full: this only refers to the system permission on Android 13+ so no changes are necessary.
-        // Minimal: change persistent connection setting to reflect preference.
-        if (BuildConfig.FLAVOR != "full") {
-            settingViewModel.getSetting(serverId) // Required to create initial value
-            settingViewModel.updateWebsocketSetting(
-                serverId,
-                if (enabled) WebsocketSetting.ALWAYS else WebsocketSetting.NEVER,
-            )
+            }
         }
     }
 }

@@ -58,7 +58,8 @@ import androidx.compose.ui.unit.dp
 import com.mikepenz.iconics.compose.Image
 import com.mikepenz.iconics.typeface.library.community.material.CommunityMaterial
 import io.homeassistant.companion.android.common.R as commonR
-import io.homeassistant.companion.android.common.data.wifi.WifiHelper
+import io.homeassistant.companion.android.common.data.network.WifiHelper
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.util.compose.HaAlertInfo
 import io.homeassistant.companion.android.util.compose.HaAlertWarning
 import io.homeassistant.companion.android.util.plus
@@ -81,8 +82,10 @@ fun SsidView(
     onSetEthernet: (Boolean) -> Unit,
     onSetVpn: (Boolean) -> Unit,
     onSetPrioritize: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     LazyColumn(
+        modifier = modifier,
         contentPadding = PaddingValues(vertical = 16.dp) + safeBottomPaddingValues(applyHorizontal = false),
     ) {
         item("intro") {
@@ -116,7 +119,7 @@ fun SsidView(
         if (
             activeSsid?.isNotBlank() == true &&
             wifiSsids.none { it == activeSsid } &&
-            (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || activeSsid !== WifiManager.UNKNOWN_SSID)
+            (!SdkVersion.isAtLeast(Build.VERSION_CODES.R) || activeSsid !== WifiManager.UNKNOWN_SSID)
         ) {
             item("ssid.suggestion") {
                 Chip(
@@ -145,7 +148,10 @@ fun SsidView(
                 usingWifi &&
                     (
                         it == activeSsid ||
-                            (it.startsWith(WifiHelper.BSSID_PREFIX) && it.removePrefix(WifiHelper.BSSID_PREFIX).equals(activeBssid, ignoreCase = true))
+                            (
+                                it.startsWith(WifiHelper.BSSID_PREFIX) &&
+                                    it.removePrefix(WifiHelper.BSSID_PREFIX).equals(activeBssid, ignoreCase = true)
+                                )
                         )
             }
             Row(
@@ -191,6 +197,15 @@ fun SsidView(
             }
         }
 
+        item("vpn") {
+            SsidSubheader(
+                title = stringResource(commonR.string.manage_ssids_vpn),
+                icon = Icons.Default.VpnKey,
+                checked = vpn,
+                onClicked = { onSetVpn(it) },
+            )
+        }
+
         item("ethernet") {
             Column {
                 Spacer(Modifier.height(16.dp))
@@ -201,15 +216,6 @@ fun SsidView(
                     onClicked = { onSetEthernet(it) },
                 )
             }
-        }
-
-        item("vpn") {
-            SsidSubheader(
-                title = stringResource(commonR.string.manage_ssids_vpn),
-                icon = Icons.Default.VpnKey,
-                checked = vpn,
-                onClicked = { onSetVpn(it) },
-            )
         }
 
         if (wifiSsids.isNotEmpty() || ethernet == true || vpn == true) {
@@ -250,7 +256,7 @@ fun SsidSubheader(
     onClicked: ((Boolean) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    val modifier = if (onClicked != null) {
+    val subheaderModifier = if (onClicked != null) {
         modifier.then(
             Modifier
                 .clickable { checked?.let { onClicked(!it) } ?: onClicked(true) }
@@ -265,7 +271,7 @@ fun SsidSubheader(
         )
     }
     Row(
-        modifier = modifier,
+        modifier = subheaderModifier,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -281,18 +287,18 @@ fun SsidSubheader(
             Switch(
                 checked = checked == true,
                 onCheckedChange = null,
-                colors = SwitchDefaults.colors(uncheckedThumbColor = colorResource(commonR.color.colorSwitchUncheckedThumb)),
+                colors = SwitchDefaults.colors(
+                    uncheckedThumbColor = colorResource(commonR.color.colorSwitchUncheckedThumb),
+                ),
             )
         }
     }
 }
 
 @Composable
-fun SsidInput(
-    onSubmit: (String) -> Boolean,
-) {
+fun SsidInput(onSubmit: (String) -> Boolean, modifier: Modifier = Modifier) {
     val keyboardController = LocalSoftwareKeyboardController.current
-    Row(modifier = Modifier.padding(horizontal = 16.dp)) {
+    Row(modifier = modifier.padding(horizontal = 16.dp)) {
         var ssidInput by remember { mutableStateOf("") }
         var ssidError by remember { mutableStateOf(false) }
 
@@ -341,12 +347,9 @@ fun SsidInput(
 }
 
 @Composable
-fun SsidPrioritizeInternal(
-    prioritize: Boolean,
-    onChanged: (Boolean) -> Unit,
-) {
+fun SsidPrioritizeInternal(prioritize: Boolean, onChanged: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     var prioritizeDropdown by remember { mutableStateOf(false) }
-    Box {
+    Box(modifier = modifier) {
         Column(
             modifier = Modifier
                 .clickable { prioritizeDropdown = true }

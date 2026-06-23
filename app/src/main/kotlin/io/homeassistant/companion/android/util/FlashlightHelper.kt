@@ -5,16 +5,13 @@ import android.content.Context
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.os.Build
 import androidx.annotation.RequiresPermission
 import androidx.core.content.getSystemService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import timber.log.Timber
 
-class FlashlightHelper @Inject constructor(
-    @ApplicationContext context: Context,
-) {
+class FlashlightHelper @Inject constructor(@ApplicationContext context: Context) {
 
     private val cameraManager by lazy { context.getSystemService<CameraManager>() }
     private val cameraId: String? by lazy {
@@ -34,9 +31,7 @@ class FlashlightHelper @Inject constructor(
     fun turnOnFlashlight() {
         try {
             cameraId?.let {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    cameraManager?.setTorchMode(it, true)
-                }
+                cameraManager?.setTorchMode(it, true)
                 Timber.i("Flashlight turned ON")
             }
         } catch (e: CameraAccessException) {
@@ -48,9 +43,7 @@ class FlashlightHelper @Inject constructor(
     fun turnOffFlashlight() {
         try {
             cameraId?.let {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    cameraManager?.setTorchMode(it, false)
-                }
+                cameraManager?.setTorchMode(it, false)
                 Timber.i("Flashlight turned OFF")
             }
         } catch (e: CameraAccessException) {

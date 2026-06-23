@@ -38,6 +38,7 @@ import io.homeassistant.companion.android.util.compose.MdcAlertDialog
 fun NfcWriteView(
     isNfcEnabled: Boolean,
     identifier: String?,
+    modifier: Modifier = Modifier,
     onSetIdentifier: ((String) -> Unit)? = null,
 ) {
     var identifierDialog by remember { mutableStateOf(false) }
@@ -53,7 +54,7 @@ fun NfcWriteView(
     }
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .padding(all = 16.dp),
@@ -92,13 +93,11 @@ fun NfcWriteView(
 }
 
 @Composable
-fun NfcWriteIdentifierDialog(
-    onCancel: () -> Unit,
-    onSubmit: (String) -> Unit,
-) {
+fun NfcWriteIdentifierDialog(onCancel: () -> Unit, onSubmit: (String) -> Unit, modifier: Modifier = Modifier) {
     val inputValue = remember { mutableStateOf("") }
 
     MdcAlertDialog(
+        modifier = modifier,
         onDismissRequest = onCancel,
         title = { Text(stringResource(commonR.string.nfc_write_tag_enter_identifier)) },
         content = {
@@ -117,12 +116,12 @@ fun NfcWriteIdentifierDialog(
 
 @Preview(showSystemUi = true)
 @Composable
-fun NfcWriteViewNfcDisabledPreview() {
+private fun NfcWriteViewNfcDisabledPreview() {
     NfcWriteView(isNfcEnabled = false, identifier = "identifier")
 }
 
 @Preview(showSystemUi = true)
 @Composable
-fun NfcWriteViewNfcEnabledPreview() {
+private fun NfcWriteViewNfcEnabledPreview() {
     NfcWriteView(isNfcEnabled = true, identifier = "identifier", onSetIdentifier = {})
 }

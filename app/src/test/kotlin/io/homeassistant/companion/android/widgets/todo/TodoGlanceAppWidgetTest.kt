@@ -10,14 +10,17 @@ import androidx.glance.testing.unit.assertHasNoClickAction
 import androidx.glance.testing.unit.hasContentDescriptionEqualTo
 import androidx.glance.testing.unit.hasTestTag
 import androidx.glance.testing.unit.hasTextEqualTo
+import dagger.hilt.android.testing.HiltTestApplication
 import io.homeassistant.companion.android.common.R
 import io.homeassistant.companion.android.database.widget.WidgetBackgroundType
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(application = HiltTestApplication::class)
 class TodoGlanceAppWidgetTest {
     private val context = RuntimeEnvironment.getApplication()
 
@@ -140,11 +143,6 @@ class TodoGlanceAppWidgetTest {
 
         onNode(hasTextEqualTo(context.getString(R.string.widget_todo_empty)))
             .assertDoesNotExist()
-
-        onNode(hasTextEqualTo(context.getString(R.string.widget_todo_active)))
-            .assertExists()
-        onNode(hasTextEqualTo(context.getString(R.string.widget_todo_completed)))
-            .assertExists()
         onNode(hasTextEqualTo("Hello"))
             .assertExists()
             .assertIsNotChecked()
@@ -197,11 +195,6 @@ class TodoGlanceAppWidgetTest {
 
         onNode(hasTextEqualTo(context.getString(R.string.widget_todo_empty)))
             .assertDoesNotExist()
-
-        onNode(hasTextEqualTo(context.getString(R.string.widget_todo_active)))
-            .assertExists()
-        onNode(hasTextEqualTo(context.getString(R.string.widget_todo_completed)))
-            .assertDoesNotExist()
         onNode(hasTextEqualTo("Hello"))
             .assertExists()
             .assertIsNotChecked()
@@ -253,11 +246,6 @@ class TodoGlanceAppWidgetTest {
         assertTitleBar(expectedTitle)
 
         onNode(hasTextEqualTo(context.getString(R.string.widget_todo_empty)))
-            .assertDoesNotExist()
-
-        onNode(hasTextEqualTo(context.getString(R.string.widget_todo_active)))
-            .assertExists()
-        onNode(hasTextEqualTo(context.getString(R.string.widget_todo_completed)))
             .assertDoesNotExist()
         onNode(hasTextEqualTo("Hello"))
             .assertExists()

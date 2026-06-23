@@ -11,13 +11,16 @@ import androidx.wear.activity.ConfirmationActivity
 import dagger.hilt.android.AndroidEntryPoint
 import io.homeassistant.companion.android.R
 import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.database.server.TemporaryServer
 import io.homeassistant.companion.android.databinding.ActivityManualSetupBinding
 import io.homeassistant.companion.android.onboarding.integration.MobileAppIntegrationActivity
 import io.homeassistant.companion.android.util.adjustInset
 import javax.inject.Inject
 
 @AndroidEntryPoint
-class ManualSetupActivity : AppCompatActivity(), ManualSetupView {
+class ManualSetupActivity :
+    AppCompatActivity(),
+    ManualSetupView {
     companion object {
         fun newInstance(context: Context): Intent {
             return Intent(context, ManualSetupActivity::class.java)
@@ -41,8 +44,8 @@ class ManualSetupActivity : AppCompatActivity(), ManualSetupView {
         adjustInset(applicationContext, null, binding)
     }
 
-    override fun startIntegration(serverId: Int) {
-        startActivity(MobileAppIntegrationActivity.newInstance(this, serverId))
+    override fun startIntegration(temporaryServer: TemporaryServer) {
+        startActivity(MobileAppIntegrationActivity.newInstance(this, temporaryServer))
     }
 
     override fun showLoading() {

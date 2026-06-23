@@ -1,10 +1,12 @@
 package io.homeassistant.companion.android.common.util
 
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.SocketResponse
+import io.homeassistant.companion.android.util.sensitive
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -31,15 +33,27 @@ import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.modules.plus
-import org.json.JSONArray
+import kotlinx.serialization.serializer
+import kotlinx.serialization.serializerOrNull
+import timber.log.Timber
 
-fun JSONArray.toStringList(): List<String> =
-    List(length()) { i ->
-        getString(i)
-    }
+/**
+ * Converts a JsonArray to a list of strings by extracting the primitive content from each element.
+ *
+ * This assumes all elements in the array are JsonPrimitive values. If any element is not a
+ * JsonPrimitive (for example, a JsonObject or JsonArray), this will throw an exception.
+ *
+ * @return A list containing the string content of each array element
+ * @throws IllegalArgumentException if any element is not a JsonPrimitive
+ */
+fun JsonArray.toStringList(): List<String> = List(size) { i ->
+    val element = this[i]
+    element.jsonPrimitive.content
+}
 
 /**
  * Kotlinx serialization Json instance to use while interacting with the API of Home Assistant Core.
@@ -51,7 +65,7 @@ val kotlinJsonMapper = Json {
     encodeDefaults = true
     prettyPrint = false
     // explicitNulls = true // default is to print null values in the JSON send if you don't want this behavior you need a custom serializer
-    serializersModule = serializersModule + SocketResponse.socketResponseSerializerModuler
+    serializersModule += SocketResponse.socketResponseSerializerModule
 }
 
 /**
@@ -85,9 +99,13 @@ class LocalDateTimeSerializer : KSerializer<LocalDateTime> {
  * where some types are well-known and explicitly handled, while others are unknown
  * and need to be captured as raw JSON content.
  *
+ * @property discriminator The unrecognized type discriminator value,
+ *           or `null` if the discriminator was missing from the JSON input.
+ *           Useful for logging which unknown type was received.
  * @property content The raw JSON content of the object.
  */
 interface UnknownJsonContent {
+    val discriminator: String?
     val content: JsonElement
 }
 
@@ -125,14 +143,17 @@ fun interface UnknownJsonContentBuilder<T : UnknownJsonContent> {
  *     data class KnownType(val data: String) : MyResponse
  *
  *     @Serializable
- *     data class UnknownType(override val content: JsonElement) : MyResponse, UnknownJsonContent
+ *     data class UnknownType(
+ *         override val discriminator: String?,
+ *         override val content: JsonElement,
+ *     ) : MyResponse, UnknownJsonContent
  * }
  *
  * val module = SerializersModule {
- *     polymorphicDefaultDeserializer(MyResponse::class) {
+ *     polymorphicDefaultDeserializer(MyResponse::class) { className ->
  *         object : UnknownJsonContentDeserializer<MyResponse.UnknownType>() {
  *             override val builder = UnknownJsonContentBuilder { content ->
- *                 MyResponse.UnknownType(content)
+ *                 MyResponse.UnknownType(discriminator = className, content = content)
  *             }
  *         }
  *     }
@@ -175,12 +196,13 @@ abstract class UnknownJsonContentDeserializer<T : UnknownJsonContent> : Deserial
  */
 object MapAnySerializer : KSerializer<Map<String, Any?>> {
     @OptIn(ExperimentalSerializationApi::class)
-    override val descriptor: SerialDescriptor = mapSerialDescriptor(String.serializer().descriptor, JsonElement.serializer().descriptor)
+    override val descriptor: SerialDescriptor =
+        mapSerialDescriptor(String.serializer().descriptor, JsonElement.serializer().descriptor)
 
     @OptIn(ExperimentalSerializationApi::class)
     override fun serialize(encoder: Encoder, value: Map<String, Any?>) {
         val jsonEncoder = encoder as? JsonEncoder ?: error("MapAnySerializer can only be used with JSON")
-        val jsonObject = JsonObject(value.mapValues { (_, v) -> toJsonElement(v) })
+        val jsonObject = JsonObject(value.mapValues { (_, v) -> toJsonElement(jsonEncoder, v) })
         jsonEncoder.encodeJsonElement(jsonObject)
     }
 
@@ -201,7 +223,7 @@ object AnySerializer : KSerializer<Any?> {
 
     override fun serialize(encoder: Encoder, value: Any?) {
         val jsonEncoder = encoder as? JsonEncoder ?: error("AnySerializer can only be used with JSON")
-        jsonEncoder.encodeJsonElement(toJsonElement(value))
+        jsonEncoder.encodeJsonElement(toJsonElement(jsonEncoder, value))
     }
 
     override fun deserialize(decoder: Decoder): Any? {
@@ -221,24 +243,395 @@ private fun parseJsonElement(element: JsonElement): Any? {
             element.floatOrNull != null -> element.float
             else -> null
         }
+
         is JsonObject -> element.mapValues { (_, v) -> parseJsonElement(v) }
         is JsonArray -> element.map { parseJsonElement(it) }
     }
 }
 
-private fun toJsonElement(value: Any?): JsonElement {
-    return when (value) {
-        null -> JsonNull
-        is String -> JsonPrimitive(value)
-        is Boolean -> JsonPrimitive(value)
-        is Number -> JsonPrimitive(value)
-        is Map<*, *> -> JsonObject(
-            value.mapNotNull { (key, v) ->
-                if (key is String) key to toJsonElement(v) else throw IllegalArgumentException("Unsupported type: ${key?.javaClass} as map key")
-            }.toMap(),
-        )
-        is List<*> -> JsonArray(value.map { toJsonElement(it) })
-        is Array<*> -> JsonArray(value.map { toJsonElement(it) })
-        else -> throw IllegalArgumentException("Unsupported type: ${value::class}")
+@OptIn(InternalSerializationApi::class)
+private fun toJsonElement(encoder: JsonEncoder, value: Any?): JsonElement {
+    if (value == null) return JsonNull
+
+    // Try to get a serializer compiled or built-in.
+    val serializer = value::class.serializerOrNull()
+
+    return if (serializer != null) {
+        encoder.json.encodeToJsonElement(value::class.serializer() as KSerializer<Any>, value)
+    } else {
+        when (value) {
+            is String -> JsonPrimitive(value)
+            is Boolean -> JsonPrimitive(value)
+            is Number -> JsonPrimitive(value)
+            is Map<*, *> -> JsonObject(
+                value.mapNotNull { (key, v) ->
+                    if (key is String) {
+                        key to toJsonElement(
+                            encoder,
+                            v,
+                        )
+                    } else {
+                        throw IllegalArgumentException("Unsupported type: ${key?.javaClass} as map key")
+                    }
+                }.toMap(),
+            )
+
+            is List<*> -> JsonArray(value.map { toJsonElement(encoder, it) })
+            is Array<*> -> JsonArray(value.map { toJsonElement(encoder, it) })
+            // Handles internal JsonElement types from kotlinx.serialization, such as JsonLiteral
+            // (returned when accessing elements from parsed JSON using [] operator). JsonLiteral is an internal
+            // implementation detail that extends JsonPrimitive but doesn't have a public serializer.
+            // This case allows passing through any JsonElement directly without re-encoding.
+            is JsonElement -> value
+            else -> {
+                throw IllegalArgumentException("Unsupported type: ${value::class}")
+            }
+        }
     }
 }
+
+/**
+ * Safely casts this JsonElement to a JsonObject.
+ *
+ * @return The element as a JsonObject if it is one, null otherwise (for example, if it's a
+ *         JsonPrimitive, JsonArray, or JsonNull)
+ */
+fun JsonElement.jsonObjectOrNull(): JsonObject? = this as? JsonObject
+
+/**
+ * Safely casts this JsonElement to a JsonArray.
+ *
+ * @return The element as a JsonArray if it is one, null otherwise (for example, if it's a
+ *         JsonPrimitive, JsonObject, or JsonNull)
+ */
+fun JsonElement.jsonArrayOrNull(): JsonArray? = this as? JsonArray
+
+/**
+ * Converts a map with string keys and arbitrary values to a JsonObject.
+ *
+ * This uses [MapAnySerializer] to handle the conversion, which supports primitive types,
+ * collections, nested maps, and serializable objects. See [MapAnySerializer] documentation
+ * for details on supported types and limitations.
+ *
+ * Example:
+ * ```kotlin
+ * val data = mapOf(
+ *     "name" to "Alice",
+ *     "age" to 30,
+ *     "active" to true
+ * )
+ * val json = data.toJsonObject()
+ * ```
+ *
+ * @return A JsonObject representation of this map
+ * @throws IllegalArgumentException if the map contains unsupported value types or non-string keys in nested maps
+ */
+fun Map<String, Any?>.toJsonObject(): JsonObject {
+    return kotlinJsonMapper.encodeToJsonElement(MapAnySerializer, this) as JsonObject
+}
+
+/**
+ * Parses a JSON string to a JsonObject, returning null if parsing fails.
+ *
+ * This function safely handles various failure scenarios including empty strings, malformed JSON,
+ * and JSON that represents non-object types (for example, arrays or primitives).
+ *
+ * Example:
+ * ```kotlin
+ * val json = """{"name": "Alice", "age": 30}""".toJsonObjectOrNull()
+ * // json is a JsonObject with properties "name" and "age"
+ *
+ * val invalid = "not valid json".toJsonObjectOrNull()
+ * // invalid is null
+ *
+ * val array = """["item1", "item2"]""".toJsonObjectOrNull()
+ * // array is null (because it's a JSON array, not an object)
+ * ```
+ *
+ * @return A JsonObject if the string is valid JSON representing an object, null otherwise
+ */
+fun String.toJsonObjectOrNull(): JsonObject? {
+    if (this.isEmpty()) return null
+    return runCatching {
+        Json.parseToJsonElement(this) as? JsonObject
+    }.onFailure {
+        Timber.w("Failed to convert to a json object: ${sensitive(this)}")
+    }.getOrNull()
+}
+
+/**
+ * Retrieves a string value from this JsonObject, returning null if the value cannot be accessed.
+ *
+ * This function safely handles various scenarios including missing keys, null values, and
+ * type mismatches. It will return null if:
+ * - The key does not exist in the JsonObject
+ * - The value for the key is JsonNull
+ * - The value is not a JsonPrimitive (for example, it's a JsonObject or JsonArray)
+ * - The primitive value is not a string (for example, it's a number or boolean)
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("name", JsonPrimitive("Alice"))
+ *     put("age", JsonPrimitive(30))
+ * }
+ * json.getStringOrNull("name")  // Returns "Alice"
+ * json.getStringOrNull("age")   // Returns null (it's a number, not a string)
+ * json.getStringOrNull("email") // Returns null (key doesn't exist)
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @return The string value if present and valid, null otherwise
+ */
+fun JsonObject.getStringOrNull(key: String): String? {
+    return runCatching {
+        val value = this[key]
+        if (value is JsonNull) null else value?.jsonPrimitive?.content
+    }.onFailure {
+        Timber.w("Failed to get string value for $key in jsonObject: ${sensitive(this.toString())}")
+    }.getOrNull()
+}
+
+/**
+ * Retrieves a string value from this JsonObject, returning a fallback value if the value cannot be accessed.
+ *
+ * This is a convenience function that combines [getStringOrNull] with a default value. It will
+ * return the fallback if the key doesn't exist, the value is null, or the value cannot be
+ * converted to a string.
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("name", JsonPrimitive("Alice"))
+ * }
+ * json.getStringOrElse("name", "Unknown")    // Returns "Alice"
+ * json.getStringOrElse("email", "No Email")  // Returns "No Email"
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @param fallback The default value to return if the key is missing or invalid
+ * @return The string value if present and valid, the fallback value otherwise
+ */
+fun JsonObject.getStringOrElse(key: String, fallback: String): String = this.getStringOrNull(key) ?: fallback
+
+/**
+ * Retrieves a boolean value from this JsonObject, returning null if the value cannot be accessed.
+ *
+ * This function safely handles various scenarios including missing keys, null values, and
+ * type mismatches. It will return null if:
+ * - The key does not exist in the JsonObject
+ * - The value for the key is JsonNull
+ * - The value is not a JsonPrimitive (for example, it's a JsonObject or JsonArray)
+ * - The primitive value is not a boolean (for example, it's a string or number)
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("active", JsonPrimitive(true))
+ *     put("name", JsonPrimitive("Alice"))
+ * }
+ * json.getBooleanOrNull("active")  // Returns true
+ * json.getBooleanOrNull("name")    // Returns null (it's a string, not a boolean)
+ * json.getBooleanOrNull("deleted") // Returns null (key doesn't exist)
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @return The boolean value if present and valid, null otherwise
+ */
+fun JsonObject.getBooleanOrNull(key: String): Boolean? {
+    return runCatching {
+        val value = this[key]
+        if (value is JsonNull) null else value?.jsonPrimitive?.booleanOrNull
+    }.onFailure {
+        Timber.w("Failed to get boolean value for $key in jsonObject: ${sensitive(this.toString())}")
+    }.getOrNull()
+}
+
+/**
+ * Retrieves a boolean value from this JsonObject, returning a fallback value if the value cannot be accessed.
+ *
+ * This is a convenience function that combines [getBooleanOrNull] with a default value. It will
+ * return the fallback if the key doesn't exist, the value is null, or the value cannot be
+ * converted to a boolean.
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("active", JsonPrimitive(true))
+ * }
+ * json.getBooleanOrElse("active", false)  // Returns true
+ * json.getBooleanOrElse("deleted", false) // Returns false
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @param fallback The default value to return if the key is missing or invalid
+ * @return The boolean value if present and valid, the fallback value otherwise
+ */
+fun JsonObject.getBooleanOrElse(key: String, fallback: Boolean): Boolean = this.getBooleanOrNull(key) ?: fallback
+
+/**
+ * Retrieves an integer value from this JsonObject, returning null if the value cannot be accessed.
+ *
+ * This function safely handles various scenarios including missing keys, null values, and
+ * type mismatches. It will return null if:
+ * - The key does not exist in the JsonObject
+ * - The value for the key is JsonNull
+ * - The value is not a JsonPrimitive (for example, it's a JsonObject or JsonArray)
+ * - The primitive value is not an integer (for example, it's a string or boolean, or a number too large for Int)
+ *
+ * Note: This will return null for floating-point numbers. Use JsonPrimitive.int only for integer values.
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("age", JsonPrimitive(30))
+ *     put("name", JsonPrimitive("Alice"))
+ * }
+ * json.getIntOrNull("age")   // Returns 30
+ * json.getIntOrNull("name")  // Returns null (it's a string, not an int)
+ * json.getIntOrNull("score") // Returns null (key doesn't exist)
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @return The integer value if present and valid, null otherwise
+ */
+fun JsonObject.getIntOrNull(key: String): Int? {
+    return runCatching {
+        val value = this[key]
+        if (value is JsonNull) null else value?.jsonPrimitive?.intOrNull
+    }.onFailure {
+        Timber.w("Failed to get integer value for $key in jsonObject: ${sensitive(this.toString())}")
+    }.getOrNull()
+}
+
+/**
+ * Retrieves a float value from this JsonObject, returning null if the value cannot be accessed.
+ *
+ * This function safely handles various scenarios including missing keys, null values, and
+ * type mismatches. It will return null if:
+ * - The key does not exist in the JsonObject
+ * - The value for the key is JsonNull
+ * - The value is not a JsonPrimitive (for example, it's a JsonObject or JsonArray)
+ * - The primitive value is not a float (for example, it's a string or boolean, or a number too large for Float)
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("age", JsonPrimitive(30.0))
+ *     put("name", JsonPrimitive("Alice"))
+ * }
+ * json.getFloatOrNull("age")   // Returns 30.0
+ * json.getFloatOrNull("name")  // Returns null (it's a string, not a float)
+ * json.getFloatOrNull("score") // Returns null (key doesn't exist)
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @return The float value if present and valid, null otherwise
+ */
+fun JsonObject.getFloatOrNull(key: String): Float? {
+    return runCatching {
+        val value = this[key]
+        if (value is JsonNull) null else value?.jsonPrimitive?.floatOrNull
+    }.onFailure {
+        Timber.w("Failed to get float value for $key in jsonObject: ${sensitive(this.toString())}")
+    }.getOrNull()
+}
+
+/**
+ * Retrieves a double value from this JsonObject, returning null if the value cannot be accessed.
+ *
+ * This function safely handles various scenarios including missing keys, null values, and
+ * type mismatches. It will return null if:
+ * - The key does not exist in the JsonObject
+ * - The value for the key is JsonNull
+ * - The value is not a JsonPrimitive (for example, it's a JsonObject or JsonArray)
+ * - The primitive value is not a double (for example, it's a string or boolean, or a number too large for Double)
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("age", JsonPrimitive(30.0))
+ *     put("name", JsonPrimitive("Alice"))
+ * }
+ * json.getDoubleOrNull("age")   // Returns 30.0
+ * json.getDoubleOrNull("name")  // Returns null (it's a string, not a double)
+ * json.getDoubleOrNull("score") // Returns null (key doesn't exist)
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @return The double value if present and valid, null otherwise
+ */
+fun JsonObject.getDoubleOrNull(key: String): Double? {
+    return runCatching {
+        val value = this[key]
+        if (value is JsonNull) null else value?.jsonPrimitive?.doubleOrNull
+    }.onFailure {
+        Timber.w("Failed to get double value for $key in jsonObject: ${sensitive(this.toString())}")
+    }.getOrNull()
+}
+
+/**
+ * Retrieves an integer value from this JsonObject, returning a fallback value if the value cannot be accessed.
+ *
+ * This is a convenience function that combines [getIntOrNull] with a default value. It will
+ * return the fallback if the key doesn't exist, the value is null, or the value cannot be
+ * converted to an integer.
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("age", JsonPrimitive(30))
+ * }
+ * json.getIntOrElse("age", 0)   // Returns 30
+ * json.getIntOrElse("score", 0) // Returns 0
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @param fallback The default value to return if the key is missing or invalid
+ * @return The integer value if present and valid, the fallback value otherwise
+ */
+fun JsonObject.getIntOrElse(key: String, fallback: Int): Int = this.getIntOrNull(key) ?: fallback
+
+/**
+ * Retrieves a float value from this JsonObject, returning a fallback value if the value cannot be accessed.
+ *
+ * This is a convenience function that combines [getFloatOrNull] with a default value. It will
+ * return the fallback if the key doesn't exist, the value is null, or the value cannot be
+ * converted to a float.
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("age", JsonPrimitive(30.0))
+ * }
+ * json.getFloatOrElse("age", 0f)   // Returns 30.0
+ * json.getFloatOrElse("score", 0f) // Returns 0.0
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @param fallback The default value to return if the key is missing or invalid
+ * @return The float value if present and valid, the fallback value otherwise
+ */
+fun JsonObject.getFloatOrElse(key: String, fallback: Float): Float = this.getFloatOrNull(key) ?: fallback
+
+/**
+ * Retrieves a double value from this JsonObject, returning a fallback value if the value cannot be accessed.
+ *
+ * This is a convenience function that combines [getDoubleOrNull] with a default value. It will
+ * return the fallback if the key doesn't exist, the value is null, or the value cannot be
+ * converted to a double.
+ *
+ * Example:
+ * ```kotlin
+ * val json = buildJsonObject {
+ *     put("age", JsonPrimitive(30.0))
+ * }
+ * json.getDoubleOrElse("age", 0.O)   // Returns 30.0
+ * json.getDoubleOrElse("score", 0.0) // Returns 0.0
+ * ```
+ *
+ * @param key The key to look up in the JsonObject
+ * @param fallback The default value to return if the key is missing or invalid
+ * @return The double value if present and valid, the fallback value otherwise
+ */
+fun JsonObject.getDoubleOrElse(key: String, fallback: Double): Double = this.getDoubleOrNull(key) ?: fallback

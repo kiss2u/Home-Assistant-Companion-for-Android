@@ -8,7 +8,6 @@ import android.nfc.NfcAdapter
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -36,8 +35,8 @@ class NfcSetupActivity : BaseActivity() {
     }
 
     companion object {
-        const val EXTRA_TAG_VALUE = "tag_value"
-        const val EXTRA_MESSAGE_ID = "message_id"
+        private const val EXTRA_TAG_VALUE = "tag_value"
+        private const val EXTRA_MESSAGE_ID = "message_id"
 
         const val NAV_WELCOME = "nfc_welcome"
         const val NAV_READ = "nfc_read"
@@ -61,8 +60,6 @@ class NfcSetupActivity : BaseActivity() {
             simpleWrite = true
             viewModel.writeNewTagSimple(it)
         }
-
-        enableEdgeToEdge()
 
         setContent {
             HomeAssistantAppTheme {

@@ -1,9 +1,6 @@
-import com.google.gms.googleservices.GoogleServicesPlugin.GoogleServicesPluginConfig
-
 plugins {
     alias(libs.plugins.homeassistant.android.application)
     alias(libs.plugins.homeassistant.android.flavor)
-    alias(libs.plugins.google.services)
     alias(libs.plugins.homeassistant.android.dependencies)
     alias(libs.plugins.kotlin.parcelize)
 }
@@ -16,7 +13,8 @@ android {
         minSdk = libs.versions.androidSdk.automotive.min.get().toInt()
 
         // We add 3 because the app, wear (+1) and automotive versions need to have different version codes.
-        versionCode = 3 + checkNotNull(versionCode) { "Did you forget to apply the convention plugin that set the version code?" }
+        versionCode =
+            3 + checkNotNull(versionCode) { "Did you forget to apply the convention plugin that set the version code?" }
 
         manifestPlaceholders["sentryRelease"] = "$applicationId@$versionName"
         manifestPlaceholders["sentryDsn"] = System.getenv("SENTRY_DSN") ?: ""
@@ -39,45 +37,53 @@ android {
     sourceSets {
         getByName("main") {
             kotlin {
-                srcDirs("../app/src/main/kotlin")
+                directories += "../app/src/main/kotlin"
             }
             assets {
-                srcDirs("../app/src/main/assets")
+                directories += "../app/src/main/assets"
             }
             res {
-                srcDirs("../app/src/main/res")
+                directories += "../app/src/main/res"
             }
         }
         getByName("full") {
             kotlin {
-                srcDirs("../app/src/full/kotlin")
+                directories += "../app/src/full/kotlin"
             }
             res {
-                srcDirs("../app/src/full/res")
+                directories += "../app/src/full/res"
             }
         }
         getByName("minimal") {
             kotlin {
-                srcDirs("../app/src/minimal/kotlin")
+                directories += "../app/src/minimal/kotlin"
             }
             res {
-                srcDirs("../app/src/minimal/res")
+                directories += "../app/src/minimal/res"
             }
         }
         getByName("debug") {
+            kotlin {
+                directories += "../app/src/debug/kotlin"
+            }
             res {
-                srcDirs("../app/src/debug/res")
+                directories += "../app/src/debug/res"
+            }
+        }
+        getByName("release") {
+            kotlin {
+                directories += "../app/src/release/kotlin"
             }
         }
         getByName("androidTest") {
             kotlin {
-                srcDirs("../app/src/androidTest/kotlin")
+                directories += "../app/src/androidTest/kotlin"
             }
             assets {
-                srcDirs("../app/src/androidTest/assets")
+                directories += "../app/src/androidTest/assets"
             }
             res {
-                srcDirs("../app/src/androidTest/res")
+                directories += "../app/src/androidTest/res"
             }
         }
     }
@@ -86,9 +92,4 @@ android {
 dependencies {
     // Most of the dependencies are coming from the convention plugin to avoid duplication with `:app` module.
     implementation(libs.car.automotive)
-}
-
-// Disable to fix memory leak and be compatible with the configuration cache.
-configure<GoogleServicesPluginConfig> {
-    disableVersionCheck = true
 }

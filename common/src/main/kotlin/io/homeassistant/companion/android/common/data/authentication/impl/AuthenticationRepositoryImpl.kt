@@ -6,11 +6,17 @@ import io.homeassistant.companion.android.common.data.LocalStorage
 import io.homeassistant.companion.android.common.data.authentication.AuthenticationRepository
 import io.homeassistant.companion.android.common.data.authentication.AuthorizationException
 import io.homeassistant.companion.android.common.data.authentication.SessionState
+import io.homeassistant.companion.android.common.data.authentication.impl.AuthenticationService.Companion.SEGMENT_AUTH_TOKEN
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.data.servers.firstUrlOrNull
 import io.homeassistant.companion.android.common.util.MapAnySerializer
+import io.homeassistant.companion.android.common.util.di.SuspendProvider
 import io.homeassistant.companion.android.common.util.kotlinJsonMapper
+import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.database.server.ServerSessionInfo
-import javax.inject.Named
+import io.homeassistant.companion.android.di.qualifiers.NamedInstallId
+import io.homeassistant.companion.android.di.qualifiers.NamedSessionStorage
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import timber.log.Timber
 
@@ -18,8 +24,8 @@ class AuthenticationRepositoryImpl @AssistedInject constructor(
     private val authenticationService: AuthenticationService,
     private val serverManager: ServerManager,
     @Assisted private val serverId: Int,
-    @Named("session") private val localStorage: LocalStorage,
-    @Named("installId") private val installId: String,
+    @NamedSessionStorage private val localStorage: LocalStorage,
+    @NamedInstallId private val installId: SuspendProvider<String>,
 ) : AuthenticationRepository {
 
     companion object {
@@ -27,45 +33,24 @@ class AuthenticationRepositoryImpl @AssistedInject constructor(
         private const val PREF_BIOMETRIC_HOME_BYPASS_ENABLED = "biometric_home_bypass_enabled"
     }
 
-    private val server get() = serverManager.getServer(serverId)!!
-
-    override suspend fun registerAuthorizationCode(authorizationCode: String) {
-        val url = server.connection.getUrl()?.toHttpUrlOrNull()
-        if (url == null) {
-            Timber.e("Unable to register auth code.")
-            return
-        }
-        authenticationService.getToken(
-            url.newBuilder().addPathSegments("auth/token").build(),
-            AuthenticationService.GRANT_TYPE_CODE,
-            authorizationCode,
-            AuthenticationService.CLIENT_ID,
-        ).let {
-            serverManager.updateServer(
-                server.copy(
-                    session = ServerSessionInfo(
-                        it.accessToken,
-                        it.refreshToken!!,
-                        System.currentTimeMillis() / 1000 + it.expiresIn,
-                        it.tokenType,
-                        installId,
-                    ),
-                ),
-            )
-        }
+    private suspend fun server(): Server {
+        return checkNotNull(serverManager.getServer(serverId)) { "No server found for id $serverId" }
     }
 
+    private suspend fun connectionStateProvider() = serverManager.connectionStateProvider(serverId)
+
     override suspend fun registerRefreshToken(refreshToken: String) {
-        val url = server.connection.getUrl()?.toHttpUrlOrNull()
+        val url = connectionStateProvider().urlFlow().firstUrlOrNull()?.toHttpUrlOrNull()
         if (url == null) {
-            Timber.e("Unable to register session with refresh token.")
+            Timber.e("Unable to register session with refresh token. No available URL")
             return
         }
-        refreshSessionWithToken(refreshToken)
+        refreshSessionWithToken(url, refreshToken)
     }
 
     override suspend fun retrieveExternalAuthentication(forceRefresh: Boolean): String {
         ensureValidSession(forceRefresh)
+        val server = server()
         return kotlinJsonMapper.encodeToString(
             MapAnySerializer,
             mapOf(
@@ -77,11 +62,14 @@ class AuthenticationRepositoryImpl @AssistedInject constructor(
 
     override suspend fun retrieveAccessToken(): String {
         ensureValidSession(false)
-        return server.session.accessToken!!
+        return server().session.accessToken!!
     }
 
     override suspend fun revokeSession() {
-        val url = server.connection.getUrl()?.toHttpUrlOrNull()
+        val server = server()
+        val url = connectionStateProvider().urlFlow().firstUrlOrNull {
+            "No URL available to revoke session"
+        }?.toHttpUrlOrNull()
         if (!server.session.isComplete() || url == null) {
             Timber.e("Unable to revoke session.")
             return
@@ -93,7 +81,7 @@ class AuthenticationRepositoryImpl @AssistedInject constructor(
             )
         } else {
             authenticationService.revokeTokenLegacy(
-                url.newBuilder().addPathSegments("auth/token").build(),
+                url.newBuilder().addPathSegments(SEGMENT_AUTH_TOKEN).build(),
                 server.session.refreshToken!!,
                 AuthenticationService.REVOKE_ACTION,
             )
@@ -112,44 +100,40 @@ class AuthenticationRepositoryImpl @AssistedInject constructor(
         localStorage.remove("${serverId}_$PREF_BIOMETRIC_HOME_BYPASS_ENABLED")
     }
 
-    override fun getSessionState(): SessionState {
-        return if (server.session.isComplete() && server.session.installId == installId && server.connection.getUrl() != null) {
+    override suspend fun getSessionState(): SessionState {
+        val server = server()
+        return if (server.session.isComplete() &&
+            server.session.installId == installId() &&
+            server.connection.hasAtLeastOneUrl
+        ) {
             SessionState.CONNECTED
         } else {
             SessionState.ANONYMOUS
         }
     }
 
-    override suspend fun buildAuthenticationUrl(baseUrl: String): String {
-        return baseUrl.toHttpUrlOrNull()!!
-            .newBuilder()
-            .addPathSegments("auth/authorize")
-            .addEncodedQueryParameter("response_type", "code")
-            .addEncodedQueryParameter("client_id", AuthenticationService.CLIENT_ID)
-            .build()
-            .toString()
-    }
-
     override suspend fun buildBearerToken(): String {
         ensureValidSession()
-        return "Bearer " + server.session.accessToken
+        return "Bearer " + server().session.accessToken
     }
 
     private suspend fun ensureValidSession(forceRefresh: Boolean = false) {
-        val url = server.connection.getUrl()?.toHttpUrlOrNull()
-        if (!server.session.isComplete() || server.session.installId != installId || url == null) {
+        val server = server()
+        val url = connectionStateProvider().urlFlow().firstUrlOrNull()?.toHttpUrlOrNull()
+        if (!server.session.isComplete() || server.session.installId != installId() || url == null) {
             Timber.e("Unable to ensure valid session.")
             throw AuthorizationException()
         }
 
         if (server.session.isExpired() || forceRefresh) {
-            refreshSessionWithToken(server.session.refreshToken!!)
+            refreshSessionWithToken(url, server.session.refreshToken!!)
         }
     }
 
-    private suspend fun refreshSessionWithToken(refreshToken: String) {
+    private suspend fun refreshSessionWithToken(baseUrl: HttpUrl, refreshToken: String) {
+        val server = server()
         return authenticationService.refreshToken(
-            server.connection.getUrl()?.toHttpUrlOrNull()!!.newBuilder().addPathSegments("auth/token").build(),
+            baseUrl.newBuilder().addPathSegments(SEGMENT_AUTH_TOKEN).build(),
             AuthenticationService.GRANT_TYPE_REFRESH,
             refreshToken,
             AuthenticationService.CLIENT_ID,
@@ -159,11 +143,11 @@ class AuthenticationRepositoryImpl @AssistedInject constructor(
                 serverManager.updateServer(
                     server.copy(
                         session = ServerSessionInfo(
-                            refreshedToken.accessToken,
-                            refreshToken,
-                            System.currentTimeMillis() / 1000 + refreshedToken.expiresIn,
-                            refreshedToken.tokenType,
-                            installId,
+                            accessToken = refreshedToken.accessToken,
+                            refreshToken = refreshToken,
+                            tokenExpiration = System.currentTimeMillis() / 1000 + refreshedToken.expiresIn,
+                            tokenType = refreshedToken.tokenType,
+                            installId = installId(),
                         ),
                     ),
                 )
@@ -173,7 +157,7 @@ class AuthenticationRepositoryImpl @AssistedInject constructor(
             ) {
                 revokeSession()
             }
-            throw AuthorizationException()
+            throw AuthorizationException("Failed to refresh token", it.code(), it.errorBody())
         }
     }
 
@@ -183,8 +167,7 @@ class AuthenticationRepositoryImpl @AssistedInject constructor(
     override suspend fun setLockHomeBypassEnabled(enabled: Boolean) =
         localStorage.putBoolean("${serverId}_$PREF_BIOMETRIC_HOME_BYPASS_ENABLED", enabled)
 
-    override suspend fun isLockEnabledRaw(): Boolean =
-        localStorage.getBoolean("${serverId}_$PREF_BIOMETRIC_ENABLED")
+    override suspend fun isLockEnabledRaw(): Boolean = localStorage.getBoolean("${serverId}_$PREF_BIOMETRIC_ENABLED")
 
     override suspend fun isLockHomeBypassEnabled(): Boolean =
         localStorage.getBoolean("${serverId}_$PREF_BIOMETRIC_HOME_BYPASS_ENABLED")
@@ -193,7 +176,7 @@ class AuthenticationRepositoryImpl @AssistedInject constructor(
         val raw = isLockEnabledRaw()
         val bypass = isLockHomeBypassEnabled()
         return if (raw && bypass) {
-            !server.connection.isInternal(requiresUrl = false)
+            !connectionStateProvider().isInternal(requiresUrl = false)
         } else {
             raw
         }

@@ -13,6 +13,7 @@ import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -36,12 +37,18 @@ import io.homeassistant.companion.android.R
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.data.integration.Entity
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.data.websocket.impl.entities.AreaRegistryResponse
+import io.homeassistant.companion.android.common.data.websocket.impl.entities.DeviceRegistryResponse
+import io.homeassistant.companion.android.common.data.websocket.impl.entities.EntityRegistryResponse
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.database.IconDialogCompat
+import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.util.icondialog.getIconByMdiName
 import io.homeassistant.companion.android.util.icondialog.mdiName
 import io.homeassistant.companion.android.webview.WebViewActivity
 import io.homeassistant.companion.android.widgets.assist.AssistShortcutActivity
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -56,7 +63,8 @@ class ManageShortcutsViewModel @Inject constructor(
 
     val app = application
 
-    val canPinShortcuts = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && ShortcutManagerCompat.isRequestPinShortcutSupported(app)
+    val canPinShortcuts =
+        SdkVersion.isAtLeast(Build.VERSION_CODES.O) && ShortcutManagerCompat.isRequestPinShortcutSupported(app)
     var pinnedShortcuts = ShortcutManagerCompat.getShortcuts(app, ShortcutManagerCompat.FLAG_MATCH_PINNED)
         .filter { !it.id.startsWith(AssistShortcutActivity.SHORTCUT_PREFIX) }
         .toMutableList()
@@ -64,12 +72,18 @@ class ManageShortcutsViewModel @Inject constructor(
     var dynamicShortcuts = mutableListOf<ShortcutInfoCompat>()
         private set
 
-    var servers by mutableStateOf(serverManager.defaultServers)
+    var servers by mutableStateOf(emptyList<Server>())
         private set
     var entities = mutableStateMapOf<Int, List<Entity>>()
         private set
+    var entityRegistry = mutableStateMapOf<Int, List<EntityRegistryResponse>>()
+        private set
+    var deviceRegistry = mutableStateMapOf<Int, List<DeviceRegistryResponse>>()
+        private set
+    var areaRegistry = mutableStateMapOf<Int, List<AreaRegistryResponse>>()
+        private set
 
-    private val currentServerId = serverManager.getServer()?.id ?: 0
+    private suspend fun currentServerId() = serverManager.getServer()?.id ?: 0
 
     private val iconIdToName: Map<Int, String> by lazy { IconDialogCompat(app.assets).loadAllIcons() }
 
@@ -84,53 +98,99 @@ class ManageShortcutsViewModel @Inject constructor(
         var delete: MutableState<Boolean>,
     )
 
-    var shortcuts = mutableStateListOf<Shortcut>()
+    var shortcuts = mutableStateListOf<Shortcut>().apply {
+        repeat(6) {
+            add(
+                Shortcut(
+                    id = mutableStateOf(""),
+                    serverId = mutableIntStateOf(0),
+                    selectedIcon = mutableStateOf(null),
+                    label = mutableStateOf(""),
+                    desc = mutableStateOf(""),
+                    path = mutableStateOf(""),
+                    type = mutableStateOf("lovelace"),
+                    delete = mutableStateOf(false),
+                ),
+            )
+        }
+    }
         private set
 
     init {
         viewModelScope.launch {
-            serverManager.defaultServers.forEach { server ->
+            val currentServerId = currentServerId()
+            shortcuts.forEach { it.serverId.value = currentServerId }
+
+            val servers = serverManager.servers()
+            this@ManageShortcutsViewModel.servers = servers
+            servers.forEach { server ->
                 launch {
                     entities[server.id] = try {
                         serverManager.integrationRepository(server.id).getEntities().orEmpty()
                             .sortedBy { it.entityId }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Timber.e(e, "Couldn't load entities for server")
                         emptyList()
                     }
                 }
+                launch {
+                    entityRegistry[server.id] = try {
+                        serverManager.webSocketRepository(server.id).getEntityRegistry().orEmpty()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.e(e, "Couldn't load entity registry for server")
+                        emptyList()
+                    }
+                }
+                launch {
+                    deviceRegistry[server.id] = try {
+                        serverManager.webSocketRepository(server.id).getDeviceRegistry().orEmpty()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.e(e, "Couldn't load device registry for server")
+                        emptyList()
+                    }
+                }
+                launch {
+                    areaRegistry[server.id] = try {
+                        serverManager.webSocketRepository(server.id).getAreaRegistry().orEmpty()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.e(e, "Couldn't load area registry for server")
+                        emptyList()
+                    }
+                }
             }
-        }
-        updateDynamicShortcuts()
-        Timber.d("We have ${dynamicShortcuts.size} dynamic shortcuts")
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Timber.d("Can we pin shortcuts: ${ShortcutManagerCompat.isRequestPinShortcutSupported(app)}")
-            Timber.d("We have ${pinnedShortcuts.size} pinned shortcuts")
-        }
+            updateDynamicShortcuts()
+            Timber.d("We have ${dynamicShortcuts.size} dynamic shortcuts")
 
-        for (i in 0..5) {
-            shortcuts.add(
-                Shortcut(
-                    mutableStateOf(""),
-                    mutableStateOf(currentServerId),
-                    mutableStateOf(null),
-                    mutableStateOf(""),
-                    mutableStateOf(""),
-                    mutableStateOf(""),
-                    mutableStateOf("lovelace"),
-                    mutableStateOf(false),
-                ),
-            )
-        }
+            if (SdkVersion.isAtLeast(Build.VERSION_CODES.O)) {
+                Timber.d("Can we pin shortcuts: ${ShortcutManagerCompat.isRequestPinShortcutSupported(app)}")
+                Timber.d("We have ${pinnedShortcuts.size} pinned shortcuts")
+            }
 
-        if (dynamicShortcuts.size > 0) {
-            for (i in 0 until dynamicShortcuts.size)
-                setDynamicShortcutData(dynamicShortcuts[i].id, i)
+            if (dynamicShortcuts.isNotEmpty()) {
+                for (i in 0 until dynamicShortcuts.size) {
+                    setDynamicShortcutData(dynamicShortcuts[i].id, i)
+                }
+            }
         }
     }
 
-    fun createShortcut(shortcutId: String, serverId: Int, shortcutLabel: String, shortcutDesc: String, shortcutPath: String, icon: IIcon?) {
+    fun createShortcut(
+        shortcutId: String,
+        serverId: Int,
+        shortcutLabel: String,
+        shortcutDesc: String,
+        shortcutPath: String,
+        icon: IIcon?,
+    ) {
         Timber.d("Attempt to add shortcut $shortcutId")
         val intent = Intent(
             WebViewActivity.newInstance(app, shortcutPath, serverId).addFlags(
@@ -146,7 +206,8 @@ class ManageShortcutsViewModel @Inject constructor(
             .setShortLabel(shortcutLabel)
             .setLongLabel(shortcutDesc)
             .setIcon(
-                icon?.toAdaptiveIcon() ?: // Use launcher icon that is an AdaptiveIcon so it gets themed properly by the system
+                icon?.toAdaptiveIcon()
+                    ?: // Use launcher icon that is an AdaptiveIcon so it gets themed properly by the system
                     IconCompat.createWithResource(app, R.mipmap.ic_launcher),
             )
             .setIntent(intent)
@@ -168,7 +229,7 @@ class ManageShortcutsViewModel @Inject constructor(
 
             if (isNewPinned) {
                 Timber.d("Requesting to pin shortcut: $shortcutId")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (SdkVersion.isAtLeast(Build.VERSION_CODES.O)) {
                     ShortcutManagerCompat.requestPinShortcut(app, shortcut, null)
                 }
             }
@@ -206,7 +267,11 @@ class ManageShortcutsViewModel @Inject constructor(
             backgroundColor = IconicsColor.colorInt(Color.TRANSPARENT)
         }
 
-        val adaptiveIconSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 108f, app.resources.displayMetrics).toInt()
+        val adaptiveIconSize = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            108f,
+            app.resources.displayMetrics,
+        ).toInt()
         val adaptiveBitmap = createBitmap(adaptiveIconSize, adaptiveIconSize)
         val canvas = Canvas(adaptiveBitmap)
         // Use the same color as the foreground of the launcher as background
@@ -221,7 +286,10 @@ class ManageShortcutsViewModel @Inject constructor(
     }
 
     private fun updateDynamicShortcuts() {
-        dynamicShortcuts = ShortcutManagerCompat.getShortcuts(app, ShortcutManagerCompat.FLAG_MATCH_DYNAMIC).sortedBy { it.id }.toMutableList()
+        dynamicShortcuts =
+            ShortcutManagerCompat.getShortcuts(app, ShortcutManagerCompat.FLAG_MATCH_DYNAMIC).sortedBy {
+                it.id
+            }.toMutableList()
     }
 
     private fun setDynamicShortcutData(shortcutId: String, index: Int) = viewModelScope.launch {
@@ -236,6 +304,7 @@ class ManageShortcutsViewModel @Inject constructor(
     }
 
     private suspend fun Shortcut.setData(item: ShortcutInfoCompat) {
+        val currentServerId = currentServerId()
         serverId.value = item.intent.extras?.getInt("server", currentServerId) ?: currentServerId
         label.value = item.shortLabel.toString()
         desc.value = item.longLabel.toString()

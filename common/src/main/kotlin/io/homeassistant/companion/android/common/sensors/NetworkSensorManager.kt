@@ -9,24 +9,25 @@ import android.net.NetworkCapabilities
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.util.STATE_UNAVAILABLE
 import io.homeassistant.companion.android.common.util.STATE_UNKNOWN
-import io.homeassistant.companion.android.database.AppDatabase
+import io.homeassistant.companion.android.common.util.SdkVersion
+import io.homeassistant.companion.android.common.util.getStringOrElse
+import io.homeassistant.companion.android.common.util.toJsonObjectOrNull
 import io.homeassistant.companion.android.database.sensor.SensorSetting
 import io.homeassistant.companion.android.database.sensor.SensorSettingType
 import java.lang.reflect.Method
 import java.net.Inet6Address
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.SerializationException
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okio.IOException
-import org.json.JSONException
-import org.json.JSONObject
 import timber.log.Timber
 
 class NetworkSensorManager : SensorManager {
@@ -158,42 +159,38 @@ class NetworkSensorManager : SensorManager {
             wifiSignalStrength,
         )
         val list = if (hasWifi(context)) {
-            val withPublicIp = wifiSensors.plus(publicIp)
+            val withPublicIp = wifiSensors + publicIp
             if (hasHotspot(context)) {
-                withPublicIp.plus(hotspotState)
+                withPublicIp + hotspotState
             } else {
                 withPublicIp
             }
         } else {
             listOf(publicIp)
         }
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            list.plus(networkType).plus(ip6Addresses)
-        } else {
-            list
-        }
+        return list + networkType + ip6Addresses
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return when {
             sensorId == hotspotState.id || sensorId == publicIp.id || sensorId == networkType.id -> {
                 arrayOf()
             }
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+
+            SdkVersion.isAtLeast(Build.VERSION_CODES.Q) -> {
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
                     Manifest.permission.ACCESS_BACKGROUND_LOCATION,
                 )
             }
+
             else -> {
                 arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
             }
         }
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         updateHotspotEnabledSensor(context)
         updateWifiConnectionSensor(context)
         updateBSSIDSensor(context)
@@ -203,14 +200,11 @@ class NetworkSensorManager : SensorManager {
         updateWifiFrequencySensor(context)
         updateWifiSignalStrengthSensor(context)
         updatePublicIpSensor(context)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            updateNetworkType(context)
-            updateIP6Sensor(context)
-        }
+        updateNetworkType(context)
+        updateIP6Sensor(context)
     }
 
-    private fun hasWifi(context: Context): Boolean =
-        context.applicationContext.getSystemService<WifiManager>() != null
+    private fun hasWifi(context: Context): Boolean = context.applicationContext.getSystemService<WifiManager>() != null
 
     @SuppressLint("PrivateApi")
     private fun hasHotspot(context: Context): Boolean {
@@ -301,13 +295,15 @@ class NetworkSensorManager : SensorManager {
         var bssid = if (conInfo?.bssid == null) "<not connected>" else conInfo.bssid
 
         val settingName = "network_replace_mac_var1:$bssid:"
-        val sensorDao = AppDatabase.getInstance(context).sensorDao()
+        val sensorDao = sensorDao(context)
         val sensorSettings = sensorDao.getSettings(bssidState.id)
         val getCurrentBSSID = sensorSettings.firstOrNull { it.name == SETTING_GET_CURRENT_BSSID }?.value ?: "false"
         val currentSetting = sensorSettings.firstOrNull { it.name == settingName }?.value ?: ""
         if (getCurrentBSSID == "true") {
             if (currentSetting == "") {
-                sensorDao.add(SensorSetting(bssidState.id, SETTING_GET_CURRENT_BSSID, "false", SensorSettingType.TOGGLE))
+                sensorDao.add(
+                    SensorSetting(bssidState.id, SETTING_GET_CURRENT_BSSID, "false", SensorSettingType.TOGGLE),
+                )
                 sensorDao.add(SensorSetting(bssidState.id, settingName, bssid, SensorSettingType.STRING))
             }
         } else {
@@ -343,7 +339,7 @@ class NetworkSensorManager : SensorManager {
             deviceIp = if (conInfo == null || (conInfo.networkId == -1 && conInfo.linkSpeed == -1)) {
                 "<not connected>"
             } else {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                if (SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) {
                     val connectivityManager = context.applicationContext.getSystemService<ConnectivityManager>()
                     connectivityManager?.activeNetwork?.let {
                         // Get the IPv4 address without prefix length
@@ -367,7 +363,6 @@ class NetworkSensorManager : SensorManager {
         )
     }
 
-    @RequiresApi(Build.VERSION_CODES.M)
     private suspend fun updateIP6Sensor(context: Context) {
         if (!isEnabled(context, ip6Addresses)) {
             return
@@ -382,7 +377,8 @@ class NetworkSensorManager : SensorManager {
             if (!ipAddresses.isNullOrEmpty()) {
                 val ip6Addresses = ipAddresses.filter { linkAddress -> linkAddress.address is Inet6Address }
                 if (ip6Addresses.isNotEmpty()) {
-                    ipAddressList = ipAddressList.plus(elements = ip6Addresses.map { linkAddress -> linkAddress.toString() })
+                    ipAddressList =
+                        ipAddressList.plus(elements = ip6Addresses.map { linkAddress -> linkAddress.toString() })
                     totalAddresses += ip6Addresses.size
                 }
             }
@@ -543,33 +539,40 @@ class NetworkSensorManager : SensorManager {
         val client = OkHttpClient()
         val request = Request.Builder().url("https://api.ipify.org?format=json").build()
 
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                Timber.e(e, "Error getting response from external service")
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                if (!response.isSuccessful) throw IOException("Unexpected response code $response")
-                try {
-                    val jsonObject = JSONObject(response.body.string())
-                    ip = jsonObject.getString("ip")
-                } catch (e: JSONException) {
-                    Timber.e(e, "Unable to parse ip address from response")
+        suspendCancellableCoroutine { continuation ->
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Timber.e(e, "Error getting response from external service")
+                    continuation.resume(Unit) { cause, _, _ ->
+                        // no-op
+                    }
                 }
 
-                onSensorUpdated(
-                    context,
-                    publicIp,
-                    ip,
-                    publicIp.statelessIcon,
-                    mapOf(),
-                )
-            }
-        })
+                override fun onResponse(call: Call, response: Response) {
+                    if (!response.isSuccessful) throw IOException("Unexpected response code $response")
+                    try {
+                        val jsonObject = response.body.string().toJsonObjectOrNull()
+                        ip = jsonObject?.getStringOrElse("ip", "") ?: ""
+                    } catch (e: SerializationException) {
+                        Timber.e(e, "Unable to parse ip address from response")
+                    }
+
+                    continuation.resume(Unit) { cause, _, _ ->
+                        // no-op
+                    }
+                }
+            })
+        }
+        onSensorUpdated(
+            context,
+            publicIp,
+            ip,
+            publicIp.statelessIcon,
+            mapOf(),
+        )
     }
 
     @SuppressLint("MissingPermission")
-    @RequiresApi(Build.VERSION_CODES.M)
     private suspend fun updateNetworkType(context: Context) {
         if (!isEnabled(context, networkType)) {
             return
@@ -620,18 +623,18 @@ class NetworkSensorManager : SensorManager {
     }
 
     /** Get WiFi connection info (without location data such as (B)SSID on Android >=S) */
-    private fun getWifiConnectionInfo(context: Context): WifiInfo? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val connectivityManager = context.applicationContext.getSystemService<ConnectivityManager>()
-            connectivityManager?.activeNetwork?.let {
-                val info = connectivityManager.getNetworkCapabilities(it)?.transportInfo
+    private fun getWifiConnectionInfo(context: Context): WifiInfo? = if (SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) {
+        val connectivityManager = context.applicationContext.getSystemService<ConnectivityManager>()
+        connectivityManager?.activeNetwork?.let {
+            val info = connectivityManager.getNetworkCapabilities(it)?.transportInfo
 
-                // If WifiInfo is null default to the deprecated method as a fix for some devices that may return null
-                @Suppress("DEPRECATION")
-                return@let info as? WifiInfo ?: context.applicationContext.getSystemService<WifiManager>()?.connectionInfo
-            }
-        } else {
+            // If WifiInfo is null default to the deprecated method as a fix for some devices that may return null
             @Suppress("DEPRECATION")
-            context.applicationContext.getSystemService<WifiManager>()?.connectionInfo
+            return@let info as? WifiInfo
+                ?: context.applicationContext.getSystemService<WifiManager>()?.connectionInfo
         }
+    } else {
+        @Suppress("DEPRECATION")
+        context.applicationContext.getSystemService<WifiManager>()?.connectionInfo
+    }
 }

@@ -1,11 +1,9 @@
 package io.homeassistant.companion.android.vehicle
 
-import android.content.pm.PackageManager
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.car.app.CarContext
 import androidx.car.app.model.Action
-import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.CarColor
 import androidx.car.app.model.CarIcon
 import androidx.car.app.model.GridTemplate
@@ -22,22 +20,27 @@ import io.homeassistant.companion.android.BuildConfig
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.data.authentication.SessionState
 import io.homeassistant.companion.android.common.data.integration.Entity
-import io.homeassistant.companion.android.common.data.integration.domain
+import io.homeassistant.companion.android.common.data.prefs.AutoFavorite
 import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
 import io.homeassistant.companion.android.common.data.servers.ServerManager
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.EntityRegistryResponse
+import io.homeassistant.companion.android.common.util.isAutomotive
 import io.homeassistant.companion.android.sensors.SensorReceiver
 import io.homeassistant.companion.android.util.vehicle.SUPPORTED_DOMAINS
 import io.homeassistant.companion.android.util.vehicle.getChangeServerGridItem
 import io.homeassistant.companion.android.util.vehicle.getDomainList
+import io.homeassistant.companion.android.util.vehicle.getHeaderBuilder
 import io.homeassistant.companion.android.util.vehicle.getNavigationGridItem
 import io.homeassistant.companion.android.util.vehicle.nativeModeAction
+import io.homeassistant.companion.android.util.vehicle.settingsAction
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import timber.log.Timber
 
 @RequiresApi(Build.VERSION_CODES.O)
 class MainVehicleScreen(
@@ -52,14 +55,16 @@ class MainVehicleScreen(
 
     private var favoritesEntities: List<Entity> = listOf()
     private var entityRegistry: List<EntityRegistryResponse>? = null
-    private var favoritesList = emptyList<String>()
+    private var favoritesList = emptyList<AutoFavorite>()
     private var isLoggedIn: Boolean? = null
     private val domains = mutableSetOf<String>()
     private var domainsJob: Job? = null
     private var domainsAdded = false
     private var domainsAddedFor: Int? = null
 
-    private val isAutomotive get() = carContext.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)
+    private val isAutomotive get() = carContext.isAutomotive()
+
+    private var canSwitchServers = false
 
     init {
         lifecycleScope.launch {
@@ -76,12 +81,25 @@ class MainVehicleScreen(
                             .getSessionState() == SessionState.CONNECTED
                     invalidate()
                 }
+
+                if (serverManager.servers().size > 1 && !canSwitchServers) {
+                    canSwitchServers = true
+                    invalidate()
+                }
+
                 serverId.collect { server ->
                     if (domainsAddedFor != server) {
                         domainsAdded = false
                         domainsAddedFor = server
                         invalidate() // Show loading state
-                        entityRegistry = serverManager.webSocketRepository(server).getEntityRegistry()
+                        entityRegistry = try {
+                            serverManager.webSocketRepository(server).getEntityRegistry()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Timber.e(e, "Failed to get entity registry")
+                            null
+                        }
                     }
 
                     if (domainsJob?.isActive == true) domainsJob?.cancel()
@@ -98,7 +116,10 @@ class MainVehicleScreen(
                             domainsAdded = true
 
                             val newFavorites = getFavoritesList(entities)
-                            invalidate = invalidate || newFavorites.size != favoritesEntities.size || newFavorites.toSet() != favoritesEntities.toSet()
+                            invalidate =
+                                invalidate ||
+                                newFavorites.size != favoritesEntities.size ||
+                                newFavorites.toSet() != favoritesEntities.toSet()
                             favoritesEntities = newFavorites
 
                             if (invalidate) invalidate()
@@ -121,25 +142,29 @@ class MainVehicleScreen(
     override fun onGetTemplate(): Template {
         if (isLoggedIn != true) {
             return GridTemplate.Builder().apply {
-                setTitle(carContext.getString(commonR.string.app_name))
-                setHeaderAction(Action.APP_ICON)
+                setHeader(
+                    carContext.getHeaderBuilder(
+                        title = commonR.string.app_name,
+                        action = Action.APP_ICON,
+                    ).build(),
+                )
                 setLoading(true)
             }.build()
         }
-        val serverHasFavorites = favoritesList.any { it.split("-")[0].toIntOrNull() == serverId.value }
+        val serverHasFavorites = favoritesList.any { it.serverId == serverId.value }
         val listBuilder = if (serverHasFavorites) {
             EntityGridVehicleScreen(
                 carContext,
                 serverManager,
                 serverId,
                 prefsRepository,
-                serverManager.integrationRepository(serverId.value),
+                { serverManager.integrationRepository(serverId.value) },
                 carContext.getString(commonR.string.favorites),
                 entityRegistry,
                 domains,
                 flowOf(),
                 allEntities,
-            ) { onChangeServer(it) }.getEntityGridItems(favoritesEntities)
+            ).getEntityGridItems(favoritesEntities, canSwitchServers)
         } else {
             var builder = ItemList.Builder()
             if (domains.isNotEmpty() && domainsAdded) {
@@ -160,23 +185,23 @@ class MainVehicleScreen(
                 getNavigationGridItem(
                     carContext,
                     screenManager,
-                    serverManager.integrationRepository(serverId.value),
+                    { serverManager.integrationRepository(serverId.value) },
                     allEntities,
                     entityRegistry,
                 ).build(),
             )
-
-            if (serverManager.defaultServers.size > 1) {
-                builder.addItem(
-                    getChangeServerGridItem(
-                        carContext,
-                        screenManager,
-                        serverManager,
-                        serverId,
-                    ) { onChangeServer(it) }.build(),
-                )
-            }
             builder
+        }
+        if (canSwitchServers) {
+            listBuilder.addItem(
+                getChangeServerGridItem(
+                    carContext,
+                    lifecycleScope,
+                    screenManager,
+                    serverManager,
+                    serverId,
+                ) { onChangeServer(it) }.build(),
+            )
         }
         val refreshAction = Action.Builder()
             .setIcon(
@@ -192,16 +217,17 @@ class MainVehicleScreen(
                 onRefresh()
             }.build()
 
-        val actionStripBuilder = ActionStrip.Builder()
-        if (isAutomotive && !isDrivingOptimized && BuildConfig.FLAVOR != "full") {
-            actionStripBuilder.addAction(nativeModeAction(carContext))
+        val headerBuilder = carContext.getHeaderBuilder(commonR.string.app_name, Action.APP_ICON)
+        if (isAutomotive && !isDrivingOptimized) {
+            if (BuildConfig.FLAVOR != "full") {
+                headerBuilder.addEndHeaderAction(nativeModeAction(carContext))
+            }
+            headerBuilder.addEndHeaderAction(settingsAction(carContext))
         }
-        actionStripBuilder.addAction(refreshAction)
+        headerBuilder.addEndHeaderAction(refreshAction)
 
         return GridTemplate.Builder().apply {
-            setTitle(carContext.getString(commonR.string.app_name))
-            setHeaderAction(Action.APP_ICON)
-            setActionStrip(actionStripBuilder.build())
+            setHeader(headerBuilder.build())
             if (!domainsAdded) {
                 setLoading(true)
             } else {
@@ -212,7 +238,9 @@ class MainVehicleScreen(
     }
 
     private fun getFavoritesList(entities: Map<String, Entity>): List<Entity> {
-        return entities.values.filter { entity -> favoritesList.contains("${serverId.value}-${entity.entityId}") }
-            .sortedBy { entity -> favoritesList.indexOf("${serverId.value}-${entity.entityId}") }
+        return entities.values.filter { entity ->
+            favoritesList.contains(AutoFavorite(serverId.value, entity.entityId))
+        }
+            .sortedBy { entity -> favoritesList.indexOf(AutoFavorite(serverId.value, entity.entityId)) }
     }
 }

@@ -25,9 +25,9 @@ interface HomePresenter {
     fun onInvalidAuthorization()
     fun onFinish()
 
-    fun isConnected(): Boolean
-    fun getServerId(): Int?
-    fun getWebSocketState(): WebSocketState?
+    suspend fun isConnected(): Boolean
+    suspend fun getServerId(): Int?
+    suspend fun getWebSocketState(): WebSocketState?
 
     suspend fun getEntities(): List<Entity>?
     suspend fun getEntityUpdates(entityIds: List<String>): Flow<Entity>?

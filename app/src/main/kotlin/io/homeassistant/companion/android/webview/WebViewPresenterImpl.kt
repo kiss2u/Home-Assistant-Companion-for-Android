@@ -6,16 +6,30 @@ import android.content.Context
 import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.net.Uri
 import androidx.activity.result.ActivityResult
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.toColorInt
+import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
 import dagger.hilt.android.qualifiers.ActivityContext
+import io.homeassistant.companion.android.BuildConfig
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.data.authentication.SessionState
 import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
+import io.homeassistant.companion.android.common.data.prefs.ScreenOrientation
 import io.homeassistant.companion.android.common.data.servers.ServerManager
-import io.homeassistant.companion.android.common.util.DisabledLocationHandler
-import io.homeassistant.companion.android.improv.ImprovRepository
+import io.homeassistant.companion.android.common.data.servers.UrlState
+import io.homeassistant.companion.android.common.util.GestureAction
+import io.homeassistant.companion.android.common.util.GestureDirection
+import io.homeassistant.companion.android.common.util.HAGesture
+import io.homeassistant.companion.android.common.util.cancelOnLifecycle
+import io.homeassistant.companion.android.database.server.ServerConnectionInfo
+import io.homeassistant.companion.android.database.settings.SensorUpdateFrequencySetting
+import io.homeassistant.companion.android.database.settings.Setting
+import io.homeassistant.companion.android.database.settings.SettingsDao
+import io.homeassistant.companion.android.database.settings.WebsocketSetting
+import io.homeassistant.companion.android.frontend.improv.ImprovRepository
 import io.homeassistant.companion.android.matter.MatterManager
 import io.homeassistant.companion.android.thread.ThreadManager
 import io.homeassistant.companion.android.util.UrlUtil
@@ -29,18 +43,17 @@ import java.util.regex.Pattern
 import javax.inject.Inject
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLHandshakeException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import kotlinx.serialization.json.JsonObject
 import timber.log.Timber
 
 class WebViewPresenterImpl @Inject constructor(
@@ -49,8 +62,9 @@ class WebViewPresenterImpl @Inject constructor(
     private val externalBusRepository: ExternalBusRepository,
     private val improvRepository: ImprovRepository,
     private val prefsRepository: PrefsRepository,
-    private val matterUseCase: MatterManager,
-    private val threadUseCase: ThreadManager,
+    private val matterManager: MatterManager,
+    private val threadManager: ThreadManager,
+    private val settingsDao: SettingsDao,
 ) : WebViewPresenter {
 
     private val view = context as WebView
@@ -59,9 +73,6 @@ class WebViewPresenterImpl @Inject constructor(
 
     private var serverId: Int = ServerManager.SERVER_ID_ACTIVE
 
-    private var url: URL? = null
-    private var urlForServer: Int? = null
-
     private var improvJob: Job? = null
     private var improvJobStarted = 0L
 
@@ -69,10 +80,20 @@ class WebViewPresenterImpl @Inject constructor(
 
     private var matterThreadIntentSender: IntentSender? = null
 
-    init {
-        updateActiveServer()
+    private var urlFlowJob: Job? = null
 
+    /**
+     * Tracks whether the ConnectionSecurityLevelFragment has been shown for each server
+     * during this presenter's lifecycle. Once shown for a specific server, the fragment
+     * won't be shown again for that server.
+     *
+     * Key: server ID, Value: `true` if already shown
+     */
+    private val connectionSecurityLevelShown = hashMapOf<Int, Boolean>()
+
+    init {
         mainScope.launch {
+            updateActiveServer()
             externalBusRepository.getSentFlow().collect {
                 try {
                     view.sendExternalBusMessage(it)
@@ -83,70 +104,170 @@ class WebViewPresenterImpl @Inject constructor(
         }
     }
 
-    override fun onViewReady(path: String?) {
-        mainScope.launch {
-            val oldUrl = url
-            val oldUrlForServer = urlForServer
+    override suspend fun load(
+        lifecycle: Lifecycle,
+        path: String?,
+        isInternalOverride: ((ServerConnectionInfo) -> Boolean)?,
+        isNewServer: Boolean?,
+    ) {
+        urlFlowJob?.cancel()
 
-            var server = serverManager.getServer(serverId)
-            if (server == null) {
-                setActiveServer(ServerManager.SERVER_ID_ACTIVE)
-                server = serverManager.getServer(serverId)
-            }
+        val isNewServer = isNewServer ?: ensureServerIsAvailable()
+        if (!isSessionConnected()) return
 
-            try {
-                if (serverManager.authenticationRepository(serverId).getSessionState() == SessionState.ANONYMOUS) return@launch
-            } catch (e: IllegalArgumentException) {
-                Timber.w("Unable to get server session state, not continuing")
-                return@launch
-            }
-
-            val serverConnectionInfo = server?.connection
-            url = serverConnectionInfo?.getUrl(
-                serverConnectionInfo.isInternal() || (serverConnectionInfo.prioritizeInternal && !DisabledLocationHandler.isLocationEnabled(view as Context)),
+        urlFlowJob = lifecycle.cancelOnLifecycle(Lifecycle.State.STARTED) {
+            collectUrlStateChanges(
+                isInternalOverride = isInternalOverride,
+                path = path,
+                isNewServer = isNewServer,
             )
-            urlForServer = server?.id
-            val baseUrl = url
-
-            if (path != null && !path.startsWith("entityId:")) {
-                url = UrlUtil.handle(url, path)
-            }
-
-            /*
-            We only want to cause the UI to reload if the server or URL that we need to load has
-            changed. An example of this would be opening the app on wifi with a local url then
-            loosing wifi signal and reopening app. Without this we would still be trying to use the
-            internal url externally.
-             */
-            if (
-                oldUrlForServer != urlForServer ||
-                oldUrl?.protocol != url?.protocol ||
-                oldUrl?.host != url?.host ||
-                oldUrl?.port != url?.port
-            ) {
-                view.loadUrl(
-                    url = Uri.parse(url.toString())
-                        .buildUpon()
-                        .appendQueryParameter("external_auth", "1")
-                        .build()
-                        .toString(),
-                    keepHistory = oldUrlForServer == urlForServer,
-                    openInApp = url?.baseIsEqual(baseUrl) ?: false,
-                )
-            }
         }
+    }
+
+    private suspend fun collectUrlStateChanges(
+        isInternalOverride: ((ServerConnectionInfo) -> Boolean)?,
+        path: String?,
+        isNewServer: Boolean,
+    ) {
+        var pathConsumed = false
+        var lastBaseUrl: URL? = null
+
+        if (isInternalOverride != null) {
+            Timber.d("Using isInternalOverride to get URL")
+        }
+
+        serverManager.connectionStateProvider(serverId).urlFlow(isInternalOverride).collect { urlState ->
+            val currentBaseUrl = (urlState as? UrlState.HasUrl)?.url
+            // baseUrlChanged is only true from the second emission onwards; the first emission
+            // establishes lastBaseUrl and is therefore not considered a change.
+            val baseUrlChanged = currentBaseUrl != null && lastBaseUrl?.let { it != currentBaseUrl } == true
+            if (currentBaseUrl != null) lastBaseUrl = currentBaseUrl
+
+            val effectiveRelativeUrl = if (!pathConsumed && path != null) {
+                pathConsumed = true
+                path
+            } else if (baseUrlChanged && !isNewServer) {
+                // On internal/external URL switches on the same server, preserve the full
+                // relative URL (path + query params + fragment) so the user stays on the exact
+                // same page, including filtered views like history with date ranges.
+                // Skipped for server switches where the path may not exist and would leak
+                // navigation context from the previous server.
+                view.getCurrentWebViewRelativeUrl()
+            } else {
+                null
+            }
+
+            handleUrlState(
+                urlState = urlState,
+                path = effectiveRelativeUrl,
+                shouldConsumePath = effectiveRelativeUrl != null,
+                // Keep the WebView back-stack for same-server reloads (incl. internal <-> external
+                // URL switches). The stale cross-origin previousUrl is exactly the signal
+                // resolveBackAction uses to return NavigateToRoot and route the user to the
+                // dashboard before exiting. Only server switches discard history.
+                keepHistory = !isNewServer,
+            )
+        }
+    }
+
+    /**
+     * Ensures a valid server is available by checking the current server ID.
+     *
+     * If the current server doesn't exist (e.g., after deletion), it falls back to the active
+     * server.
+     *
+     * @return `true` if the server changed during this call
+     */
+    private suspend fun ensureServerIsAvailable(): Boolean {
+        val previousServerId = serverId
+        serverManager.getServer(serverId) ?: setActiveServer(ServerManager.SERVER_ID_ACTIVE)
+        return serverId != previousServerId
+    }
+
+    /**
+     * Checks if the current server has an authenticated session.
+     *
+     * @return `true` if the session is connected, `false` if anonymous or unavailable
+     */
+    private suspend fun isSessionConnected(): Boolean {
+        return try {
+            serverManager.authenticationRepository(serverId).getSessionState() != SessionState.ANONYMOUS
+        } catch (e: IllegalStateException) {
+            Timber.w(e, "Unable to get server session state, not continuing")
+            false
+        }
+    }
+
+    private suspend fun handleUrlState(
+        urlState: UrlState,
+        path: String?,
+        shouldConsumePath: Boolean,
+        keepHistory: Boolean,
+    ) {
+        when (urlState) {
+            is UrlState.HasUrl -> loadUrl(
+                baseUrl = urlState.url,
+                path = if (shouldConsumePath) path else null,
+                keepHistory = keepHistory,
+            )
+
+            UrlState.InsecureState -> view.showBlockInsecure(serverId = serverId)
+        }
+    }
+
+    /**
+     * Loads the initial URL, optionally applying a path override.
+     *
+     * If the user needs to configure security settings and hasn't been shown the prompt
+     * for this server yet, shows the security level configuration screen instead.
+     *
+     * @param baseUrl the base server URL
+     * @param path optional path to append (ignored if starts with "entityId:")
+     * @param keepHistory whether to keep WebView history after loading. False when the
+     *        base URL changes (e.g. server or connection switch) so old entries become unreachable.
+     */
+    private suspend fun loadUrl(baseUrl: URL?, path: String?, keepHistory: Boolean) {
+        val urlToLoad = if (path != null && !path.startsWith("entityId:")) {
+            UrlUtil.handle(baseUrl, path)
+        } else {
+            baseUrl
+        }
+
+        urlToLoad?.let {
+            val urlWithAuth = it.toString().toUri()
+                .buildUpon()
+                .appendQueryParameter("external_auth", "1")
+                .build()
+
+            val shouldShowSecurityLevel = shouldSetSecurityLevel() &&
+                !connectionSecurityLevelShown.getOrPut(serverId) { false }
+
+            withContext(Dispatchers.Main) {
+                if (shouldShowSecurityLevel) {
+                    Timber.d("Security level not set for server $serverId, showing ConnectionSecurityLevelFragment")
+                    view.showConnectionSecurityLevel(serverId)
+                } else {
+                    view.loadUrl(
+                        url = urlWithAuth,
+                        keepHistory = keepHistory,
+                        openInApp = it.baseIsEqual(baseUrl),
+                        // We need the frontend to notify us of the mode to use for the status bar https://github.com/home-assistant/frontend/issues/29125
+                        serverHandleInsets = false,
+                    )
+                }
+            }
+        } ?: Timber.w("Url is null")
     }
 
     override fun getActiveServer(): Int = serverId
 
-    override fun getActiveServerName(): String? =
-        if (serverManager.isRegistered()) {
-            serverManager.getServer(serverId)?.friendlyName
-        } else {
-            null
-        }
+    override suspend fun getActiveServerName(): String? = if (serverManager.isRegistered()) {
+        serverManager.getServer(serverId)?.friendlyName
+    } else {
+        null
+    }
 
-    override fun updateActiveServer() {
+    override suspend fun updateActiveServer() {
         if (serverManager.isRegistered()) {
             serverManager.getServer()?.let {
                 serverId = it.id
@@ -154,37 +275,42 @@ class WebViewPresenterImpl @Inject constructor(
         }
     }
 
-    override fun setActiveServer(id: Int) {
+    override suspend fun setActiveServer(id: Int) {
         serverManager.getServer(id)?.let {
-            if (serverManager.authenticationRepository(id).getSessionState() == SessionState.CONNECTED) {
-                serverManager.activateServer(id)
-                serverId = id
+            try {
+                if (serverManager.authenticationRepository(id).getSessionState() == SessionState.CONNECTED) {
+                    serverManager.activateServer(id)
+                    serverId = id
+                }
+            } catch (e: IllegalStateException) {
+                Timber.e(e, "Failed to set active server")
             }
         }
     }
 
-    override fun switchActiveServer(id: Int) {
+    override suspend fun switchActiveServer(lifecycle: Lifecycle, id: Int) {
+        val isNewServer = serverId != id
         if (serverId != id && serverId != ServerManager.SERVER_ID_ACTIVE) {
             setAppActive(false) // 'Lock' old server
         }
         setActiveServer(id)
-        onViewReady(null)
+        load(lifecycle, isNewServer = isNewServer)
         view.unlockAppIfNeeded()
     }
 
-    override fun nextServer() = moveToServer(next = true)
+    override suspend fun nextServer(lifecycle: Lifecycle) = moveToServer(lifecycle, next = true)
 
-    override fun previousServer() = moveToServer(next = false)
+    override suspend fun previousServer(lifecycle: Lifecycle) = moveToServer(lifecycle, next = false)
 
-    private fun moveToServer(next: Boolean) {
-        val servers = serverManager.defaultServers
+    private suspend fun moveToServer(lifecycle: Lifecycle, next: Boolean) {
+        val servers = serverManager.servers()
         if (servers.size < 2) return
         val currentServerIndex = servers.indexOfFirst { it.id == serverId }
         if (currentServerIndex > -1) {
             var newServerIndex = if (next) currentServerIndex + 1 else currentServerIndex - 1
             if (newServerIndex == servers.size) newServerIndex = 0
             if (newServerIndex < 0) newServerIndex = servers.size - 1
-            servers.getOrNull(newServerIndex)?.let { switchActiveServer(it.id) }
+            servers.getOrNull(newServerIndex)?.let { switchActiveServer(lifecycle, it.id) }
         }
     }
 
@@ -207,21 +333,50 @@ class WebViewPresenterImpl @Inject constructor(
     override fun onGetExternalAuth(context: Context, callback: String, force: Boolean) {
         mainScope.launch {
             try {
-                view.setExternalAuth("$callback(true, ${serverManager.authenticationRepository(serverId).retrieveExternalAuthentication(force)})")
+                view.setExternalAuth(
+                    "$callback(true, ${
+                        serverManager.authenticationRepository(
+                            serverId,
+                        ).retrieveExternalAuthentication(force)
+                    })",
+                )
             } catch (e: Exception) {
                 Timber.e(e, "Unable to retrieve external auth")
-                val anonymousSession = serverManager.getServer(serverId) == null || serverManager.authenticationRepository(serverId).getSessionState() == SessionState.ANONYMOUS
+                val anonymousSession =
+                    serverManager.getServer(serverId) == null ||
+                        serverManager.authenticationRepository(serverId).getSessionState() == SessionState.ANONYMOUS
                 view.setExternalAuth("$callback(false)")
                 view.showError(
                     errorType = when {
                         anonymousSession -> WebView.ErrorType.AUTHENTICATION
-                        e is SSLException || (e is SocketTimeoutException && e.suppressed.any { it is SSLException }) -> WebView.ErrorType.SSL
+                        e is SSLException ||
+                            (
+                                e is SocketTimeoutException &&
+                                    e.suppressed.any {
+                                        it is SSLException
+                                    }
+                                ) -> WebView.ErrorType.SSL
+
                         else -> WebView.ErrorType.TIMEOUT_GENERAL
                     },
                     description = when {
                         anonymousSession -> null
-                        e is SSLHandshakeException || (e is SocketTimeoutException && e.suppressed.any { it is SSLHandshakeException }) -> context.getString(commonR.string.webview_error_FAILED_SSL_HANDSHAKE)
-                        e is SSLException || (e is SocketTimeoutException && e.suppressed.any { it is SSLException }) -> context.getString(commonR.string.webview_error_SSL_INVALID)
+                        e is SSLHandshakeException ||
+                            (
+                                e is SocketTimeoutException &&
+                                    e.suppressed.any {
+                                        it is SSLHandshakeException
+                                    }
+                                ) -> context.getString(commonR.string.webview_error_FAILED_SSL_HANDSHAKE)
+
+                        e is SSLException ||
+                            (
+                                e is SocketTimeoutException &&
+                                    e.suppressed.any {
+                                        it is SSLException
+                                    }
+                                ) -> context.getString(commonR.string.webview_error_SSL_INVALID)
+
                         else -> null
                     },
                 )
@@ -245,95 +400,94 @@ class WebViewPresenterImpl @Inject constructor(
         }
     }
 
-    override fun isFullScreen(): Boolean = runBlocking {
-        prefsRepository.isFullScreenEnabled()
+    override suspend fun isFullScreen(): Boolean {
+        return prefsRepository.isFullScreenEnabled()
     }
 
-    override fun getScreenOrientation(): String? = runBlocking {
-        prefsRepository.getScreenOrientation()
+    override suspend fun getScreenOrientation(): ScreenOrientation {
+        return prefsRepository.getScreenOrientation()
     }
 
-    override fun isKeepScreenOnEnabled(): Boolean = runBlocking {
-        prefsRepository.isKeepScreenOnEnabled()
+    override suspend fun isKeepScreenOnEnabled(): Boolean {
+        return prefsRepository.isKeepScreenOnEnabled()
     }
 
-    override fun getPageZoomLevel(): Int = runBlocking {
-        prefsRepository.getPageZoomLevel()
+    override suspend fun getPageZoomLevel(): Int {
+        return prefsRepository.getPageZoomLevel()
     }
 
-    override fun isPinchToZoomEnabled(): Boolean = runBlocking {
-        prefsRepository.isPinchToZoomEnabled()
+    override suspend fun isPinchToZoomEnabled(): Boolean {
+        return prefsRepository.isPinchToZoomEnabled()
     }
 
-    override fun isWebViewDebugEnabled(): Boolean = runBlocking {
-        prefsRepository.isWebViewDebugEnabled()
-    }
-
-    override fun isAppLocked(): Boolean = runBlocking {
-        if (serverManager.isRegistered()) {
-            try {
-                serverManager.integrationRepository(serverId).isAppLocked()
-            } catch (e: IllegalArgumentException) {
-                Timber.w("Cannot determine app locked state")
-                false
-            }
-        } else {
+    override suspend fun isAppLocked(): Boolean = if (serverManager.isRegistered()) {
+        try {
+            serverManager.integrationRepository(serverId).isAppLocked()
+        } catch (e: IllegalStateException) {
+            Timber.w(e, "Cannot determine app locked state")
             false
         }
+    } else {
+        false
     }
 
-    override fun setAppActive(active: Boolean) = runBlocking {
+    override suspend fun setAppActive(active: Boolean) {
         serverManager.getServer(serverId)?.let {
             try {
                 serverManager.integrationRepository(serverId).setAppActive(active)
             } catch (e: IllegalStateException) {
-                Timber.w("Cannot set app active $active for server $serverId")
+                Timber.w(e, "Cannot set app active $active for server $serverId")
                 Unit
             }
         } ?: Unit
         if (!active) stopScanningForImprov(true)
     }
 
-    override fun isLockEnabled(): Boolean = runBlocking {
-        serverManager.getServer(serverId)?.let {
-            serverManager.authenticationRepository(serverId).isLockEnabled()
-        } ?: false
+    override suspend fun isAutoPlayVideoEnabled(): Boolean {
+        return prefsRepository.isAutoPlayVideoEnabled()
     }
 
-    override fun isAutoPlayVideoEnabled(): Boolean = runBlocking {
-        prefsRepository.isAutoPlayVideoEnabled()
+    override suspend fun isAlwaysShowFirstViewOnAppStartEnabled(): Boolean {
+        return prefsRepository.isAlwaysShowFirstViewOnAppStartEnabled()
     }
 
-    override fun isAlwaysShowFirstViewOnAppStartEnabled(): Boolean = runBlocking {
-        prefsRepository.isAlwaysShowFirstViewOnAppStartEnabled()
-    }
-
-    override fun onExternalBusMessage(message: JSONObject) {
+    override fun onExternalBusMessage(message: JsonObject) {
         mainScope.launch {
             externalBusRepository.received(message)
         }
     }
 
-    override fun sessionTimeOut(): Int = runBlocking {
-        serverManager.getServer(serverId)?.let {
-            serverManager.integrationRepository(serverId).getSessionTimeOut()
-        } ?: 0
+    override suspend fun getGestureAction(direction: GestureDirection, pointerCount: Int): GestureAction {
+        val gesture = HAGesture.fromSwipeListener(direction, pointerCount)
+        return gesture?.let { prefsRepository.getGestureAction(it) } ?: GestureAction.NONE
     }
 
     override fun onStart(context: Context) {
-        matterUseCase.suppressDiscoveryBottomSheet(context)
+        matterManager.suppressDiscoveryBottomSheet()
     }
 
     override fun onFinish() {
         mainScope.cancel()
     }
 
-    override fun isSsidUsed(): Boolean =
+    override suspend fun isSsidUsed(): Boolean =
         serverManager.getServer(serverId)?.connection?.internalSsids?.isNotEmpty() == true
 
-    override fun getAuthorizationHeader(): String = runBlocking {
-        serverManager.getServer(serverId)?.let {
-            serverManager.authenticationRepository(serverId).buildBearerToken()
+    override fun onConnectionSecurityLevelShown() {
+        connectionSecurityLevelShown[serverId] = true
+    }
+
+    override suspend fun getAllowInsecureConnection(): Boolean? =
+        serverManager.getServer(serverId)?.connection?.allowInsecureConnection
+
+    override suspend fun getAuthorizationHeader(): String {
+        return serverManager.getServer(serverId)?.let {
+            try {
+                serverManager.authenticationRepository(serverId).buildBearerToken()
+            } catch (e: IllegalStateException) {
+                Timber.e(e, "Failed to build bearer token")
+                ""
+            }
         } ?: ""
     }
 
@@ -369,13 +523,13 @@ class WebViewPresenterImpl @Inject constructor(
                 m.group(3)!!.toInt(),
             )
         } else {
-            Color.parseColor(colorString)
+            colorString.toColorInt()
         }
     }
 
-    override fun appCanCommissionMatterDevice(): Boolean = matterUseCase.appSupportsCommissioning()
+    override fun appCanCommissionMatterDevice(): Boolean = matterManager.appSupportsCommissioning()
 
-    override fun startCommissioningMatterDevice(context: Context) {
+    override fun startCommissioningMatterDevice() {
         if (mutableMatterThreadStep.value != MatterThreadStep.REQUESTED) {
             mutableMatterThreadStep.tryEmit(MatterThreadStep.REQUESTED)
 
@@ -383,63 +537,65 @@ class WebViewPresenterImpl @Inject constructor(
             // (temporarily?) removed due to slowing down the Matter commissioning flow for the user
             // and limited usefulness of the result (because of API limitations)
 
-            startMatterCommissioningFlow(context)
+            startMatterCommissioningFlow()
         } // else already waiting for a result, don't send another request
     }
 
-    private fun startMatterCommissioningFlow(context: Context) {
-        matterUseCase.startNewCommissioningFlow(
-            context,
-            { intentSender ->
-                Timber.d("Matter commissioning is ready")
-                matterThreadIntentSender = intentSender
-                mutableMatterThreadStep.tryEmit(MatterThreadStep.MATTER_IN_PROGRESS)
-            },
-            { e ->
-                Timber.e(e, "Matter commissioning couldn't be prepared")
-                mutableMatterThreadStep.tryEmit(MatterThreadStep.ERROR_MATTER)
-            },
-        )
+    private fun startMatterCommissioningFlow() {
+        mainScope.launch {
+            when (val result = matterManager.prepareMatterDeviceCommissioning()) {
+                is MatterManager.CommissioningResult.Ready -> {
+                    Timber.d("Matter commissioning is ready")
+                    matterThreadIntentSender = result.intentSender
+                    mutableMatterThreadStep.tryEmit(MatterThreadStep.MATTER_IN_PROGRESS)
+                }
+
+                is MatterManager.CommissioningResult.Error -> {
+                    Timber.e(result.cause, "Matter commissioning couldn't be prepared")
+                    mutableMatterThreadStep.tryEmit(MatterThreadStep.ERROR_MATTER_OTHER)
+                }
+            }
+        }
     }
 
-    override fun appCanExportThreadCredentials(): Boolean = threadUseCase.appSupportsThread()
+    override fun appCanExportThreadCredentials(): Boolean = threadManager.appSupportsThread()
 
-    override fun exportThreadCredentials(context: Context) {
+    override fun exportThreadCredentials() {
         if (mutableMatterThreadStep.value != MatterThreadStep.REQUESTED) {
             mutableMatterThreadStep.tryEmit(MatterThreadStep.REQUESTED)
 
             mainScope.launch {
-                try {
-                    val result = threadUseCase.syncPreferredDataset(context, serverId, true, CoroutineScope(coroutineContext + SupervisorJob()))
-                    Timber.d("Export preferred Thread dataset returned $result")
-
-                    when (result) {
-                        is ThreadManager.SyncResult.OnlyOnDevice -> {
-                            matterThreadIntentSender = result.exportIntent
-                            mutableMatterThreadStep.tryEmit(MatterThreadStep.THREAD_EXPORT_TO_SERVER_ONLY)
-                        }
-                        is ThreadManager.SyncResult.NoneHaveCredentials,
-                        is ThreadManager.SyncResult.OnlyOnServer,
-                        -> {
-                            mutableMatterThreadStep.tryEmit(MatterThreadStep.THREAD_NONE)
-                        }
-                        is ThreadManager.SyncResult.NotConnected -> {
-                            mutableMatterThreadStep.tryEmit(MatterThreadStep.ERROR_THREAD_LOCAL_NETWORK)
-                        }
-                        else -> {
-                            mutableMatterThreadStep.tryEmit(MatterThreadStep.ERROR_THREAD_OTHER)
-                        }
-                    }
+                val result = try {
+                    threadManager.exportPreferredDataset(serverId)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
-                    Timber.w(e, "Unable to export preferred Thread dataset")
+                    Timber.e(e, "Error while trying to export preferred dataset")
                     mutableMatterThreadStep.tryEmit(MatterThreadStep.ERROR_THREAD_OTHER)
+                    return@launch
                 }
+                Timber.d("Export preferred Thread dataset returned $result")
+                val step = when (result) {
+                    is ThreadManager.SyncResult.OnlyOnDevice -> {
+                        matterThreadIntentSender = result.exportIntent
+                        MatterThreadStep.THREAD_EXPORT_TO_SERVER_ONLY
+                    }
+
+                    is ThreadManager.SyncResult.NoneHaveCredentials,
+                    is ThreadManager.SyncResult.OnlyOnServer,
+                    -> MatterThreadStep.THREAD_NONE
+
+                    is ThreadManager.SyncResult.NotConnected -> MatterThreadStep.ERROR_THREAD_LOCAL_NETWORK
+                    is ThreadManager.SyncResult.AppUnsupported,
+                    is ThreadManager.SyncResult.ServerUnsupported,
+                    -> MatterThreadStep.ERROR_THREAD_OTHER
+                }
+                mutableMatterThreadStep.tryEmit(step)
             }
         } // else already waiting for a result, don't send another request
     }
 
-    override fun getMatterThreadStepFlow(): Flow<MatterThreadStep> =
-        mutableMatterThreadStep.asStateFlow()
+    override fun getMatterThreadStepFlow(): Flow<MatterThreadStep> = mutableMatterThreadStep.asStateFlow()
 
     override fun getMatterThreadIntent(): IntentSender? {
         val intent = matterThreadIntentSender
@@ -447,18 +603,21 @@ class WebViewPresenterImpl @Inject constructor(
         return intent
     }
 
-    override fun onMatterThreadIntentResult(context: Context, result: ActivityResult) {
+    override fun onMatterThreadIntentResult(result: ActivityResult) {
         when (mutableMatterThreadStep.value) {
             MatterThreadStep.THREAD_EXPORT_TO_SERVER_MATTER -> {
                 mainScope.launch {
-                    threadUseCase.sendThreadDatasetExportResult(result, serverId)
-                    startMatterCommissioningFlow(context)
+                    threadManager.sendThreadDatasetExportResult(result, serverId)
+                    startMatterCommissioningFlow()
                 }
             }
+
             MatterThreadStep.THREAD_EXPORT_TO_SERVER_ONLY -> {
                 mainScope.launch {
-                    val sent = threadUseCase.sendThreadDatasetExportResult(result, serverId)
-                    Timber.d("Thread ${if (!sent.isNullOrBlank()) "sent credential for $sent" else "did not send credential"}")
+                    val sent = threadManager.sendThreadDatasetExportResult(result, serverId)
+                    Timber.d(
+                        "Thread ${if (!sent.isNullOrBlank()) "sent credential for $sent" else "did not send credential"}",
+                    )
                     if (sent.isNullOrBlank()) {
                         mutableMatterThreadStep.tryEmit(MatterThreadStep.THREAD_NONE)
                     } else {
@@ -466,12 +625,15 @@ class WebViewPresenterImpl @Inject constructor(
                     }
                 }
             }
+
             else -> {
-                // Any errors will have been shown in the UI provided by Play Services
+                // Errors will have been shown in the UI provided by Play Services, but may not help
+                // the user so indicate to the activity if result was not OK so we can link to docs.
                 if (result.resultCode == Activity.RESULT_OK) {
                     Timber.d("Matter commissioning returned success")
                 } else {
                     Timber.d("Matter commissioning returned with non-OK code ${result.resultCode}")
+                    mutableMatterThreadStep.tryEmit(MatterThreadStep.ERROR_MATTER_CANCELLED)
                 }
             }
         }
@@ -482,7 +644,7 @@ class WebViewPresenterImpl @Inject constructor(
     }
 
     override suspend fun shouldShowImprovPermissions(): Boolean {
-        return if (improvRepository.hasPermission(view as Context)) {
+        return if (improvRepository.hasPermissions()) {
             false
         } else {
             prefsRepository.getImprovPermissionDisplayedCount() < 2
@@ -490,8 +652,8 @@ class WebViewPresenterImpl @Inject constructor(
     }
 
     override fun shouldRequestImprovPermission(): String? {
-        var returnPermissions = try {
-            improvRepository.getRequiredPermissions().filter {
+        val returnPermissions = try {
+            improvRepository.requiredPermissions.filter {
                 ContextCompat.checkSelfPermission(view as Context, it) != PackageManager.PERMISSION_GRANTED
             }
         } catch (_: Exception) {
@@ -507,7 +669,7 @@ class WebViewPresenterImpl @Inject constructor(
     }
 
     override fun startScanningForImprov(): Boolean {
-        if (!improvRepository.hasPermission(view as Context)) {
+        if (!improvRepository.hasPermissions()) {
             Timber.d("Improv scan request ignored because app doesn't have permission")
             return false
         } else {
@@ -515,11 +677,10 @@ class WebViewPresenterImpl @Inject constructor(
         }
         improvJobStarted = System.currentTimeMillis()
         improvJob = mainScope.launch {
-            withContext(Dispatchers.IO) {
-                improvRepository.startScanning(view as Context)
-            }
-            improvRepository.getDevices().collect {
-                it.forEach { device ->
+            // scanDevices() auto-manages the BLE scan via shareIn(WhileSubscribed); cancelling
+            // this job stops the scan after the repository's idle window.
+            improvRepository.scanDevices().collect { devices ->
+                devices.forEach { device ->
                     val name = device.name ?: return@forEach
                     externalBusRepository.send(
                         ExternalBusMessage(
@@ -540,8 +701,61 @@ class WebViewPresenterImpl @Inject constructor(
     override fun stopScanningForImprov(force: Boolean) {
         if (improvJob?.isActive == true && (force || System.currentTimeMillis() - improvJobStarted > 1000)) {
             Timber.d("Improv scan stopping")
-            improvRepository.stopScanning()
             improvJob?.cancel()
         }
+    }
+
+    override suspend fun onNotificationPermissionResult(granted: Boolean) {
+        if (granted && BuildConfig.FLAVOR != "full") {
+            settingsDao.insert(
+                Setting(
+                    serverId,
+                    WebsocketSetting.ALWAYS,
+                    SensorUpdateFrequencySetting.NORMAL,
+                ),
+            )
+        }
+        serverManager.integrationRepository(serverId).setAskNotificationPermission(false)
+    }
+
+    /**
+     * Determines whether to show the notification permission prompt for the current server.
+     *
+     * The behavior differs between flavors:
+     * - **Full flavor**: If notification permission is already granted, returns `false` and
+     *   persists this decision so future checks also return `false`. This is because in the full
+     *   flavor, FCM usually handles push notifications and there's no need to tweak the websocket settings.
+     * - **Minimal flavor**: Always respects the per-server stored preference, regardless of the
+     *   current system permission state. This allows the prompt to be shown to configure websocket
+     *   settings even if the system permission was granted outside the app.
+     *
+     * @return `true` if the notification permission prompt should be shown, `false` otherwise
+     */
+    override suspend fun shouldAskNotificationPermission(): Boolean {
+        val isPermissionAlreadyGranted = NotificationManagerCompat.from(view as Context).areNotificationsEnabled()
+        val shouldAskNotificationPermission = serverManager.integrationRepository(
+            serverId,
+        ).shouldAskNotificationPermission()
+
+        if (isPermissionAlreadyGranted && BuildConfig.FLAVOR == "full") {
+            serverManager.integrationRepository(serverId).setAskNotificationPermission(false)
+            return false
+        }
+
+        return shouldAskNotificationPermission ?: true
+    }
+
+    /**
+     * Checks whether the user needs to configure their insecure connection preference.
+     *
+     * @return `true` if the server uses a plain text (HTTP) URL and the user has not yet set their
+     * preference for allowing insecure connections, `false` otherwise
+     */
+    private suspend fun shouldSetSecurityLevel(): Boolean {
+        val connection = serverManager.getServer(serverId)?.connection ?: return false
+        if (!connection.hasPlainTextUrl) {
+            return false
+        }
+        return connection.allowInsecureConnection == null
     }
 }

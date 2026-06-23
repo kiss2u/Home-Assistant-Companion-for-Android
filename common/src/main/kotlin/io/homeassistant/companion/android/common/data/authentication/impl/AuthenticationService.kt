@@ -15,6 +15,8 @@ interface AuthenticationService {
         const val GRANT_TYPE_CODE = "authorization_code"
         const val GRANT_TYPE_REFRESH = "refresh_token"
         const val REVOKE_ACTION = "revoke"
+
+        const val SEGMENT_AUTH_TOKEN = "auth/token"
     }
 
     @FormUrlEncoded
@@ -37,10 +39,7 @@ interface AuthenticationService {
 
     @FormUrlEncoded
     @POST
-    suspend fun revokeToken(
-        @Url url: HttpUrl,
-        @Field("token") refreshToken: String,
-    )
+    suspend fun revokeToken(@Url url: HttpUrl, @Field("token") refreshToken: String)
 
     @FormUrlEncoded
     @POST

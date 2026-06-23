@@ -19,16 +19,35 @@ import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.components.SingletonComponent
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.util.CHANNEL_HIGH_ACCURACY
+import io.homeassistant.companion.android.common.util.CheckLocalNetworkPermissionUseCase
 import io.homeassistant.companion.android.common.util.FailFast
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.sensors.LocationSensorManager
 import io.homeassistant.companion.android.util.ForegroundServiceLauncher
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
 class HighAccuracyLocationService : Service() {
+
+    @EntryPoint
+    @InstallIn(SingletonComponent::class)
+    interface HighAccuracyLocationServiceEntryPoint {
+        fun checkLocalNetworkPermission(): CheckLocalNetworkPermissionUseCase
+    }
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     companion object {
         private lateinit var notificationBuilder: NotificationCompat.Builder
@@ -111,8 +130,13 @@ class HighAccuracyLocationService : Service() {
         }
 
         private fun createNotificationBuilder(context: Context) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val channel = NotificationChannel(CHANNEL_HIGH_ACCURACY, context.getString(commonR.string.high_accuracy_mode_channel_name), NotificationManager.IMPORTANCE_DEFAULT)
+            if (SdkVersion.isAtLeast(Build.VERSION_CODES.O)) {
+                val channel =
+                    NotificationChannel(
+                        CHANNEL_HIGH_ACCURACY,
+                        context.getString(commonR.string.high_accuracy_mode_channel_name),
+                        NotificationManager.IMPORTANCE_DEFAULT,
+                    )
                 notificationManagerCompat.createNotificationChannel(channel)
             }
 
@@ -148,7 +172,7 @@ class HighAccuracyLocationService : Service() {
         createNotificationBuilder(this)
         notification = notificationBuilder.build()
 
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) FOREGROUND_SERVICE_TYPE_LOCATION else 0
+        val type = if (SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) FOREGROUND_SERVICE_TYPE_LOCATION else 0
         FailFast.failOnCatch {
             // Sometimes the service cannot be started as foreground due to the app being in a state where
             // this is not allowed. We haven't identified how to avoid starting the service in this state yet.
@@ -161,16 +185,30 @@ class HighAccuracyLocationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
 
-        val intervalInSeconds = intent?.getIntExtra("intervalInSeconds", DEFAULT_UPDATE_INTERVAL_SECONDS) ?: DEFAULT_UPDATE_INTERVAL_SECONDS
-        requestLocationUpdates(intervalInSeconds)
+        val intervalInSeconds =
+            intent?.getIntExtra("intervalInSeconds", DEFAULT_UPDATE_INTERVAL_SECONDS) ?: DEFAULT_UPDATE_INTERVAL_SECONDS
 
-        Timber.d("High accuracy location service (Interval: ${intervalInSeconds}s) started -> onStartCommand")
+        val checkLocalNetworkPermission = EntryPointAccessors
+            .fromApplication(applicationContext, HighAccuracyLocationServiceEntryPoint::class.java)
+            .checkLocalNetworkPermission()
+
+        serviceScope.launch {
+            if (!checkLocalNetworkPermission()) {
+                Timber.d("Stopping high-accuracy location service: ACCESS_LOCAL_NETWORK permission missing")
+                stopSelf()
+                return@launch
+            }
+            requestLocationUpdates(intervalInSeconds)
+            Timber.d("High accuracy location service (Interval: ${intervalInSeconds}s) started -> onStartCommand")
+        }
+
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
 
+        serviceScope.cancel()
         fusedLocationProviderClient?.removeLocationUpdates(getLocationUpdateIntent())
 
         LAUNCHER.onServiceDestroy(this)
@@ -188,7 +226,12 @@ class HighAccuracyLocationService : Service() {
     private fun getLocationUpdateIntent(): PendingIntent {
         val intent = Intent(this, LocationSensorManager::class.java)
         intent.action = LocationSensorManager.ACTION_PROCESS_HIGH_ACCURACY_LOCATION
-        return PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+        return PendingIntent.getBroadcast(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+        )
     }
 
     @SuppressLint("MissingPermission")

@@ -2,20 +2,18 @@ package io.homeassistant.companion.android.common.util
 
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertNull
 
 class FailFastTest {
-    private var exceptionCaught: Exception? = null
+    private var exceptionCaught: Throwable? = null
 
     @BeforeEach
     fun setUp() {
-        FailFast.setHandler(object : FailFastHandler {
-            override fun handleException(exception: Exception, additionalMessage: String?) {
-                exceptionCaught = exception
-            }
-        })
+        FailFast.setHandler { throwable, additionalMessage -> exceptionCaught = throwable }
     }
 
     @AfterEach
@@ -53,13 +51,13 @@ class FailFastTest {
 
     @Test
     fun `Given condition not met when invoking failWhen then returns value`() {
-        FailFast.failWhen(false) { "fail" }
+        assertFalse(FailFast.failWhen(false) { "fail" })
         assertNull(exceptionCaught)
     }
 
     @Test
     fun `Given condition met when invoking failWhen then properly propagate the error`() {
-        FailFast.failWhen(true) { "expected error" }
+        assertTrue(FailFast.failWhen(true) { "expected error" })
         assertEquals("expected error", exceptionCaught?.message)
     }
 }

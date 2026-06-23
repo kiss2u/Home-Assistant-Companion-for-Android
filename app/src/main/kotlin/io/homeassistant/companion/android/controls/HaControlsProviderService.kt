@@ -8,13 +8,17 @@ import androidx.annotation.RequiresApi
 import dagger.hilt.android.AndroidEntryPoint
 import io.homeassistant.companion.android.common.data.integration.ControlsAuthRequiredSetting
 import io.homeassistant.companion.android.common.data.integration.Entity
+import io.homeassistant.companion.android.common.data.integration.IntegrationDomains.CAMERA_DOMAIN
+import io.homeassistant.companion.android.common.data.integration.IntegrationDomains.CLIMATE_DOMAIN
+import io.homeassistant.companion.android.common.data.integration.IntegrationDomains.MEDIA_PLAYER_DOMAIN
 import io.homeassistant.companion.android.common.data.integration.applyCompressedStateDiff
-import io.homeassistant.companion.android.common.data.integration.domain
 import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.data.servers.firstUrlOrNull
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.AreaRegistryResponse
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.DeviceRegistryResponse
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.EntityRegistryResponse
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.util.RegistriesDataHandler
 import java.time.LocalDateTime
 import java.util.concurrent.Flow
@@ -41,8 +45,8 @@ class HaControlsProviderService : ControlsProviderService() {
         private val domainToHaControl = mapOf(
             "automation" to DefaultSwitchControl,
             "button" to DefaultButtonControl,
-            "camera" to CameraControl,
-            "climate" to ClimateControl,
+            CAMERA_DOMAIN to CameraControl,
+            CLIMATE_DOMAIN to ClimateControl,
             "cover" to CoverControl,
             "fan" to FanControl,
             "ha_failed" to HaFailedControl,
@@ -52,7 +56,7 @@ class HaControlsProviderService : ControlsProviderService() {
             "input_number" to DefaultSliderControl,
             "light" to LightControl,
             "lock" to LockControl,
-            "media_player" to MediaPlayerControl,
+            MEDIA_PLAYER_DOMAIN to MediaPlayerControl,
             "number" to DefaultSliderControl,
             "remote" to DefaultSwitchControl,
             "scene" to DefaultButtonControl,
@@ -62,17 +66,15 @@ class HaControlsProviderService : ControlsProviderService() {
             "vacuum" to VacuumControl,
         )
         private val domainToMinimumApi = mapOf(
-            "camera" to Build.VERSION_CODES.S,
+            CAMERA_DOMAIN to Build.VERSION_CODES.S,
         )
 
-        fun getSupportedDomains(): List<String> =
-            domainToHaControl
-                .filter { it.value != null }
-                .map { it.key }
-                .filter {
-                    domainToMinimumApi[it] == null ||
-                        Build.VERSION.SDK_INT >= domainToMinimumApi[it]!!
-                }
+        fun getSupportedDomains(): List<String> = domainToHaControl
+            .map { it.key }
+            .filter {
+                domainToMinimumApi[it] == null ||
+                    SdkVersion.isAtLeast(domainToMinimumApi[it]!!)
+            }
     }
 
     @Inject
@@ -100,12 +102,15 @@ class HaControlsProviderService : ControlsProviderService() {
 
                 val splitServersIntoMultipleStructures = splitMultiServersIntoStructures()
 
-                serverManager.defaultServers.map { server ->
+                serverManager.servers().map { server ->
                     async {
                         try {
-                            val getAreaRegistry = async { serverManager.webSocketRepository(server.id).getAreaRegistry() }
-                            val getDeviceRegistry = async { serverManager.webSocketRepository(server.id).getDeviceRegistry() }
-                            val getEntityRegistry = async { serverManager.webSocketRepository(server.id).getEntityRegistry() }
+                            val getAreaRegistry =
+                                async { serverManager.webSocketRepository(server.id).getAreaRegistry() }
+                            val getDeviceRegistry =
+                                async { serverManager.webSocketRepository(server.id).getDeviceRegistry() }
+                            val getEntityRegistry =
+                                async { serverManager.webSocketRepository(server.id).getEntityRegistry() }
                             val getEntities = async { serverManager.integrationRepository(server.id).getEntities() }
 
                             areaRegistry[server.id] = getAreaRegistry.await()
@@ -124,7 +129,10 @@ class HaControlsProviderService : ControlsProviderService() {
                             entities[server.id] = entities[server.id].orEmpty()
                                 .sortedWith(compareBy(nullsLast()) { areaForEntity[server.id]?.get(it.entityId)?.name })
                         } catch (e: Exception) {
-                            Timber.e(e, "Unable to load entities/registries for server ${server.id} (${server.friendlyName}), skipping")
+                            Timber.e(
+                                e,
+                                "Unable to load entities/registries for server ${server.id} (${server.friendlyName}), skipping",
+                            )
                         }
                     }
                 }.awaitAll()
@@ -135,13 +143,14 @@ class HaControlsProviderService : ControlsProviderService() {
                         serverEntities.value?.forEach { allEntities += Pair(serverEntities.key, it) }
                     }
                     val serverNames = mutableMapOf<Int, String>()
-                    if (serverManager.defaultServers.size > 1) {
-                        serverManager.defaultServers.forEach { serverNames[it.id] = it.friendlyName }
+                    val servers = serverManager.servers()
+                    if (servers.size > 1) {
+                        servers.forEach { serverNames[it.id] = it.friendlyName }
                     }
                     allEntities
                         .filter {
                             domainToMinimumApi[it.second.domain] == null ||
-                                Build.VERSION.SDK_INT >= domainToMinimumApi[it.second.domain]!!
+                                SdkVersion.isAtLeast(domainToMinimumApi[it.second.domain]!!)
                         }
                         .mapNotNull { (serverId, entity) ->
                             try {
@@ -180,14 +189,14 @@ class HaControlsProviderService : ControlsProviderService() {
             subscriber.onSubscribe(object : Flow.Subscription {
                 val webSocketScope = CoroutineScope(Dispatchers.IO)
                 override fun request(n: Long) {
-                    if (!serverManager.isRegistered()) return else Timber.d("request $n")
-
                     ioScope.launch {
+                        if (!serverManager.isRegistered()) return@launch else Timber.d("request $n")
+
                         controlIds
                             .groupBy {
                                 // Controls added before multiserver don't have a server ID, assume the first
                                 it.split(".")[0].toIntOrNull()
-                                    ?: serverManager.defaultServers.firstOrNull()?.id
+                                    ?: serverManager.servers().firstOrNull()?.id
                             }.forEach { (serverId, serverControlIds) ->
                                 if (serverId == null) return@forEach
                                 subscribeToEntitiesForServer(
@@ -208,26 +217,21 @@ class HaControlsProviderService : ControlsProviderService() {
         }
     }
 
-    override fun performControlAction(
-        controlId: String,
-        action: ControlAction,
-        consumer: Consumer<Int>,
-    ) {
-        Timber.d("Control: $controlId, action: $action")
-        if (!serverManager.isRegistered()) return consumer.accept(ControlAction.RESPONSE_FAIL)
-
-        var server = 0
-        var domain = ""
-        controlId.split(".")[0].toIntOrNull()?.let {
-            server = it
-            domain = controlId.split(".")[1]
-        } ?: run {
-            server = serverManager.defaultServers.firstOrNull()!!.id
-            domain = controlId.split(".")[0]
-        }
-        val haControl = domainToHaControl[domain]
-
+    override fun performControlAction(controlId: String, action: ControlAction, consumer: Consumer<Int>) {
         ioScope.launch {
+            Timber.d("Control: $controlId, action: $action")
+            if (!serverManager.isRegistered()) return@launch consumer.accept(ControlAction.RESPONSE_FAIL)
+
+            var server = 0
+            var domain = ""
+            controlId.split(".")[0].toIntOrNull()?.let {
+                server = it
+                domain = controlId.split(".")[1]
+            } ?: run {
+                server = serverManager.servers().firstOrNull()!!.id
+                domain = controlId.split(".")[0]
+            }
+            val haControl = domainToHaControl[domain]
             var actionSuccess = false
             if (haControl != null) {
                 try {
@@ -253,7 +257,7 @@ class HaControlsProviderService : ControlsProviderService() {
         webSocketScope: CoroutineScope,
         subscriber: Flow.Subscriber<in Control>,
     ) {
-        val serverCount = serverManager.defaultServers.size
+        val serverCount = serverManager.servers().size
         val server = serverManager.getServer(serverId)
 
         // Server name should only be specified if there's more than one server, as controls being split by structure (or the area names appended with the server name)
@@ -300,7 +304,9 @@ class HaControlsProviderService : ControlsProviderService() {
             }
         }
         val entities = mutableMapOf<String, Entity>()
-        val baseUrl = serverManager.getServer(serverId)?.connection?.getUrl()?.toString()?.removeSuffix("/") ?: ""
+        val baseUrl =
+            serverManager.connectionStateProvider(serverId).urlFlow().firstUrlOrNull()?.toString()?.removeSuffix("/")
+                ?: ""
 
         areaRegistry[serverId] = getAreaRegistry.await()
         deviceRegistry[serverId] = getDeviceRegistry.await()
@@ -337,14 +343,24 @@ class HaControlsProviderService : ControlsProviderService() {
                             // All initial states will be in the first message
                             sentInitial = true
                             (entityIds - entities.keys).forEach { missingEntity ->
-                                Timber.e("Unable to get $missingEntity from Home Assistant, not returned in subscribe_entities.")
+                                Timber.e(
+                                    "Unable to get $missingEntity from Home Assistant, not returned in subscribe_entities.",
+                                )
                                 val entity = getFailedEntity(missingEntity, error404)
                                 entities["ha_failed.$missingEntity"] = entity
                                 toSend["ha_failed.$missingEntity"] = entity
                             }
                         }
                         Timber.d("Sending ${toSend.size} entities to subscriber")
-                        sendEntitiesToSubscriber(subscriber, controlIds, toSend, serverId, serverName, webSocketScope, baseUrl)
+                        sendEntitiesToSubscriber(
+                            subscriber,
+                            controlIds,
+                            toSend,
+                            serverId,
+                            serverName,
+                            webSocketScope,
+                            baseUrl,
+                        )
                     } ?: run {
                     entityIds.forEachIndexed { index, entityId ->
                         val entity = getFailedEntity(entityId, Exception())
@@ -369,7 +385,8 @@ class HaControlsProviderService : ControlsProviderService() {
         } else {
             // Set up initial states
             entityIds.forEachIndexed { index, entityId ->
-                webSocketScope.launch { // using launch to create controls async
+                webSocketScope.launch {
+                    // using launch to create controls async
                     var id = entityId
                     try {
                         val entity = serverManager.integrationRepository(serverId).getEntity(entityId)
@@ -428,20 +445,44 @@ class HaControlsProviderService : ControlsProviderService() {
         webSocketScope.launch {
             serverManager.webSocketRepository(serverId).getAreaRegistryUpdates()?.collect {
                 areaRegistry[serverId] = serverManager.webSocketRepository(serverId).getAreaRegistry()
-                sendEntitiesToSubscriber(subscriber, controlIds, entities, serverId, serverName, webSocketScope, baseUrl)
+                sendEntitiesToSubscriber(
+                    subscriber,
+                    controlIds,
+                    entities,
+                    serverId,
+                    serverName,
+                    webSocketScope,
+                    baseUrl,
+                )
             }
         }
         webSocketScope.launch {
             serverManager.webSocketRepository(serverId).getDeviceRegistryUpdates()?.collect {
                 deviceRegistry[serverId] = serverManager.webSocketRepository(serverId).getDeviceRegistry()
-                sendEntitiesToSubscriber(subscriber, controlIds, entities, serverId, serverName, webSocketScope, baseUrl)
+                sendEntitiesToSubscriber(
+                    subscriber,
+                    controlIds,
+                    entities,
+                    serverId,
+                    serverName,
+                    webSocketScope,
+                    baseUrl,
+                )
             }
         }
         webSocketScope.launch {
             serverManager.webSocketRepository(serverId).getEntityRegistryUpdates()?.collect { event ->
                 if (event.action == "update" && entityIds.contains(event.entityId)) {
                     entityRegistry[serverId] = serverManager.webSocketRepository(serverId).getEntityRegistry()
-                    sendEntitiesToSubscriber(subscriber, controlIds, entities, serverId, serverName, webSocketScope, baseUrl)
+                    sendEntitiesToSubscriber(
+                        subscriber,
+                        controlIds,
+                        entities,
+                        serverId,
+                        serverName,
+                        webSocketScope,
+                        baseUrl,
+                    )
                 }
             }
         }
@@ -497,10 +538,7 @@ class HaControlsProviderService : ControlsProviderService() {
         }
     }
 
-    private fun getFailedEntity(
-        entityId: String,
-        exception: Exception,
-    ): Entity {
+    private fun getFailedEntity(entityId: String, exception: Exception): Entity {
         return Entity(
             entityId = entityId,
             state = if (exception is HttpException && exception.code() == 404) "notfound" else "exception",
@@ -518,7 +556,7 @@ class HaControlsProviderService : ControlsProviderService() {
     )
 
     private suspend fun entityRequiresAuth(entityId: String, serverId: Int): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        return if (SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU)) {
             val setting = prefsRepository.getControlsAuthRequired()
             if (setting == ControlsAuthRequiredSetting.SELECTION) {
                 val includeList = prefsRepository.getControlsAuthEntities()

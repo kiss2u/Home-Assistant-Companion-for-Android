@@ -6,10 +6,13 @@ import androidx.car.app.connection.CarConnection
 import androidx.lifecycle.Observer
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.sensors.SensorManager
+import io.homeassistant.companion.android.common.util.SdkVersion
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
-class AndroidAutoSensorManager : SensorManager, Observer<Int> {
+class AndroidAutoSensorManager :
+    SensorManager,
+    Observer<Int> {
 
     companion object {
         private val androidAutoConnected = SensorManager.BasicSensor(
@@ -27,7 +30,7 @@ class AndroidAutoSensorManager : SensorManager, Observer<Int> {
         get() = commonR.string.sensor_name_android_auto
 
     override suspend fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        return if (SdkVersion.isAtLeast(Build.VERSION_CODES.O)) {
             listOf(androidAutoConnected)
         } else {
             emptyList()
@@ -35,10 +38,10 @@ class AndroidAutoSensorManager : SensorManager, Observer<Int> {
     }
 
     override fun hasSensor(context: Context): Boolean {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        return SdkVersion.isAtLeast(Build.VERSION_CODES.O)
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return emptyArray()
     }
 

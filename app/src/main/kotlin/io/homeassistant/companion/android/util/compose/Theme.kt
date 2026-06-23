@@ -18,6 +18,9 @@ import androidx.glance.color.ColorProviders
 import androidx.glance.material.ColorProviders
 import androidx.glance.text.FontWeight
 import androidx.glance.text.TextStyle
+import io.homeassistant.companion.android.common.compose.theme.DarkHAColorScheme
+import io.homeassistant.companion.android.common.compose.theme.LightHAColorScheme
+import io.homeassistant.companion.android.common.compose.theme.LocalHAColorScheme
 
 val colorPrimary = Color(0xFF03A9F4)
 val colorPrimaryDark = Color(0xFF0288D1)
@@ -47,16 +50,19 @@ private val haDarkColors = darkColors(
  * A Compose [MaterialTheme] version of the app's XML theme. This achieves the same goal as the
  * (now deprecated) [com.google.accompanist.themeadapter.material.MdcTheme].
  */
+@Deprecated(
+    "Uses Material Design 2. Use HATheme (Material Design 3) instead. Kept until remaining call sites are migrated.",
+)
 @Composable
-fun HomeAssistantAppTheme(
-    content: @Composable () -> Unit,
-) {
+fun HomeAssistantAppTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colors = if (isSystemInDarkTheme()) haDarkColors else haLightColors,
     ) {
         // Copied from MdcTheme:
         CompositionLocalProvider(
             LocalContentColor provides MaterialTheme.colors.onBackground,
+            // To be able to use HA composable in old theme
+            LocalHAColorScheme provides if (isSystemInDarkTheme()) DarkHAColorScheme else LightHAColorScheme,
             content = content,
         )
     }
@@ -77,27 +83,50 @@ fun HomeAssistantGlanceTheme(
 object HomeAssistantGlanceTypography {
     val titleLarge: TextStyle
         @Composable
-        get() = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = HomeAssistantGlanceTheme.colors.onSurface)
+        get() = TextStyle(
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = HomeAssistantGlanceTheme.colors.onSurface,
+        )
     val titleMedium: TextStyle
         @Composable
-        get() = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Medium, color = HomeAssistantGlanceTheme.colors.onSurface)
+        get() = TextStyle(
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Medium,
+            color = HomeAssistantGlanceTheme.colors.onSurface,
+        )
     val titleSmall: TextStyle
         @Composable
-        get() = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Normal, color = HomeAssistantGlanceTheme.colors.onSurface)
+        get() = TextStyle(
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Normal,
+            color = HomeAssistantGlanceTheme.colors.onSurface,
+        )
     val bodyLarge: TextStyle
         @Composable
-        get() = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold, color = HomeAssistantGlanceTheme.colors.onSurface)
+        get() = TextStyle(
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = HomeAssistantGlanceTheme.colors.onSurface,
+        )
     val bodyMedium: TextStyle
         @Composable
-        get() = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Medium, color = HomeAssistantGlanceTheme.colors.onSurface)
+        get() = TextStyle(
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = HomeAssistantGlanceTheme.colors.onSurface,
+        )
     val bodySmall: TextStyle
         @Composable
-        get() = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Normal, color = HomeAssistantGlanceTheme.colors.onSurface)
+        get() = TextStyle(
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Normal,
+            color = HomeAssistantGlanceTheme.colors.onSurface,
+        )
 }
 
 object HomeAssistantGlanceDimensions {
     val iconSize: Dp
-        @Composable
         get() = 48.dp
 }
 
@@ -131,9 +160,7 @@ object HomeAssistantGlanceTheme {
         @Composable
         get() = LocalGlanceColors.current
     val typography: HomeAssistantGlanceTypography
-        @Composable
         get() = HomeAssistantGlanceTypography
     val dimensions: HomeAssistantGlanceDimensions
-        @Composable
         get() = HomeAssistantGlanceDimensions
 }

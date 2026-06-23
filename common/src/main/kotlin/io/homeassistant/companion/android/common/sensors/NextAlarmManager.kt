@@ -2,13 +2,11 @@ package io.homeassistant.companion.android.common.sensors
 
 import android.app.AlarmManager
 import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Build
 import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.util.STATE_UNAVAILABLE
 import io.homeassistant.companion.android.common.util.STATE_UNKNOWN
-import io.homeassistant.companion.android.database.AppDatabase
+import io.homeassistant.companion.android.common.util.isAutomotive
 import io.homeassistant.companion.android.database.sensor.SensorSetting
 import io.homeassistant.companion.android.database.sensor.SensorSettingType
 import java.text.SimpleDateFormat
@@ -45,20 +43,14 @@ class NextAlarmManager : SensorManager {
     }
 
     override fun hasSensor(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            !context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)
-        } else {
-            true
-        }
+        return !context.isAutomotive()
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return emptyArray()
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         updateNextAlarm(context)
     }
 
@@ -72,7 +64,7 @@ class NextAlarmManager : SensorManager {
         var utc = STATE_UNAVAILABLE
         var pendingIntent = ""
 
-        val sensorDao = AppDatabase.getInstance(context).sensorDao()
+        val sensorDao = sensorDao(context)
         val sensorSetting = sensorDao.getSettings(nextAlarm.id)
         val allowPackageList = sensorSetting.firstOrNull { it.name == SETTING_ALLOW_LIST }?.value ?: ""
 
@@ -93,7 +85,9 @@ class NextAlarmManager : SensorManager {
                         return
                     }
                 } else {
-                    sensorDao.add(SensorSetting(nextAlarm.id, SETTING_ALLOW_LIST, allowPackageList, SensorSettingType.LIST_APPS))
+                    sensorDao.add(
+                        SensorSetting(nextAlarm.id, SETTING_ALLOW_LIST, allowPackageList, SensorSettingType.LIST_APPS),
+                    )
                 }
 
                 val cal: Calendar = GregorianCalendar()

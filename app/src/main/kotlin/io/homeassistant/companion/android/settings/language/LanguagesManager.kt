@@ -6,41 +6,41 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
+import io.homeassistant.companion.android.common.util.SdkVersion
 import javax.inject.Inject
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.xmlpull.v1.XmlPullParser
 import timber.log.Timber
 
-class LanguagesManager @Inject constructor(
-    private var prefs: PrefsRepository,
-) {
+class LanguagesManager @Inject constructor(private var prefs: PrefsRepository) {
     companion object {
         const val DEF_LOCALE = "default"
         private const val SYSTEM_MANAGES_LOCALE = "system_managed"
     }
 
     suspend fun getCurrentLang(): String {
-        return run {
-            val lang = prefs.getCurrentLang()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                migrateLangSetting()
-                AppCompatDelegate.getApplicationLocales().toLanguageTags().ifEmpty { DEF_LOCALE }
+        val lang = prefs.getCurrentLang()
+        return if (SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU)) {
+            migrateLangSetting()
+            AppCompatDelegate.getApplicationLocales().toLanguageTags().ifEmpty { DEF_LOCALE }
+        } else {
+            if (lang.isNullOrEmpty()) {
+                prefs.saveLang(DEF_LOCALE)
+                DEF_LOCALE
             } else {
-                if (lang.isNullOrEmpty()) {
-                    prefs.saveLang(DEF_LOCALE)
-                    DEF_LOCALE
-                } else {
-                    lang
-                }
+                lang
             }
         }
     }
 
     suspend fun saveLang(lang: String?) {
-        return run {
+        // We use a IO scope here to avoid blocking the main thread while invoking `setApplicationLocales`
+        // that behind the scene use SharedPreferences.
+        withContext(Dispatchers.IO) {
             if (!lang.isNullOrEmpty()) {
                 val currentLang = getCurrentLang()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU)) {
                     val languages =
                         if (lang == DEF_LOCALE) {
                             LocaleListCompat.getEmptyLocaleList()
@@ -56,10 +56,10 @@ class LanguagesManager @Inject constructor(
         }
     }
 
-    fun applyCurrentLang() = runBlocking {
+    suspend fun applyCurrentLang() {
         migrateLangSetting()
 
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.TIRAMISU) {
+        if (!SdkVersion.isAtLeast(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)) {
             val lang = getCurrentLang()
             val languages =
                 if (lang == DEF_LOCALE) {
@@ -72,7 +72,7 @@ class LanguagesManager @Inject constructor(
     }
 
     private suspend fun migrateLangSetting() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (!SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU)) return
         val lang = prefs.getCurrentLang()
         if (lang == SYSTEM_MANAGES_LOCALE) return
 
@@ -87,8 +87,9 @@ class LanguagesManager @Inject constructor(
         prefs.saveLang(SYSTEM_MANAGES_LOCALE)
     }
 
-    fun getLocaleTags(context: Context): List<String> {
-        return runBlocking {
+    suspend fun getLocaleTags(context: Context): List<String> {
+        // We use a IO scope here to avoid blocking the main thread while reading the xml file from the disk
+        return withContext(Dispatchers.IO) {
             val languagesList = mutableListOf<String>()
             try {
                 context.resources.getXml(commonR.xml.locales_config).use {

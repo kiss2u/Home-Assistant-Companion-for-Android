@@ -14,6 +14,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.homeassistant.companion.android.common.R
 import io.homeassistant.companion.android.common.util.CHANNEL_SENSOR_WORKER
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.database.settings.SensorUpdateFrequencySetting
 import io.homeassistant.companion.android.util.compose.InfoNotification
 import io.homeassistant.companion.android.util.compose.RadioButtonRow
@@ -23,9 +24,10 @@ import io.homeassistant.companion.android.util.safeBottomPaddingValues
 fun SensorUpdateFrequencyView(
     sensorUpdateFrequency: SensorUpdateFrequencySetting,
     onSettingChanged: (SensorUpdateFrequencySetting) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
-    Box(modifier = Modifier.verticalScroll(scrollState)) {
+    Box(modifier = modifier.verticalScroll(scrollState)) {
         Column(
             modifier = Modifier
                 .padding(safeBottomPaddingValues(applyHorizontal = false))
@@ -52,7 +54,7 @@ fun SensorUpdateFrequencyView(
                 onClick = { onSettingChanged(SensorUpdateFrequencySetting.FAST_ALWAYS) },
             )
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (SdkVersion.isAtLeast(Build.VERSION_CODES.O)) {
                 InfoNotification(
                     infoString = R.string.sensor_update_notification,
                     channelId = CHANNEL_SENSOR_WORKER,

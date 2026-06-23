@@ -9,6 +9,7 @@ import android.provider.Settings.Global.getInt
 import android.telephony.TelephonyManager
 import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.common.util.SdkVersion
 
 class MobileDataManager : SensorManager {
 
@@ -42,8 +43,8 @@ class MobileDataManager : SensorManager {
         return listOf(mobileDataState, mobileDataRoaming)
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
-        return if (sensorId == mobileDataRoaming.id || Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
+        return if (sensorId == mobileDataRoaming.id || SdkVersion.isAtLeast(Build.VERSION_CODES.O)) {
             arrayOf(Manifest.permission.READ_PHONE_STATE)
         } else {
             arrayOf()
@@ -54,9 +55,7 @@ class MobileDataManager : SensorManager {
         return context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         checkState(context, mobileDataState, "mobile_data", mobileDataState.statelessIcon)
         checkState(context, mobileDataRoaming, Settings.Global.DATA_ROAMING, mobileDataRoaming.statelessIcon)
     }
@@ -74,9 +73,9 @@ class MobileDataManager : SensorManager {
         var enabled = false
         val telephonyManager = context.applicationContext.getSystemService<TelephonyManager>()
         if (telephonyManager?.simState == TelephonyManager.SIM_STATE_READY) {
-            enabled = if (sensor.id == mobileDataRoaming.id && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            enabled = if (sensor.id == mobileDataRoaming.id && SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) {
                 telephonyManager.isDataRoamingEnabled
-            } else if (sensor.id == mobileDataState.id && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            } else if (sensor.id == mobileDataState.id && SdkVersion.isAtLeast(Build.VERSION_CODES.O)) {
                 telephonyManager.isDataEnabled
             } else {
                 getInt(context.contentResolver, settingKey, 0) == 1

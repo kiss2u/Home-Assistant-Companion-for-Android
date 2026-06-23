@@ -38,10 +38,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mikepenz.iconics.compose.IconicsPainter
 import io.homeassistant.companion.android.common.R
+import io.homeassistant.companion.android.common.compose.theme.HATheme
 import io.homeassistant.companion.android.settings.shortcuts.ManageShortcutsSettingsFragment
 import io.homeassistant.companion.android.settings.shortcuts.ManageShortcutsViewModel
 import io.homeassistant.companion.android.util.compose.ServerExposedDropdownMenu
-import io.homeassistant.companion.android.util.compose.SingleEntityPicker
+import io.homeassistant.companion.android.util.compose.entity.EntityPicker
 import io.homeassistant.companion.android.util.plus
 import io.homeassistant.companion.android.util.safeBottomPaddingValues
 
@@ -50,8 +51,10 @@ import io.homeassistant.companion.android.util.safeBottomPaddingValues
 fun ManageShortcutsView(
     viewModel: ManageShortcutsViewModel,
     showIconDialog: (tag: String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     LazyColumn(
+        modifier = modifier,
         contentPadding = PaddingValues(all = 16.dp) + safeBottomPaddingValues(applyHorizontal = false),
     ) {
         item {
@@ -81,18 +84,13 @@ fun ManageShortcutsView(
 
 @RequiresApi(Build.VERSION_CODES.N_MR1)
 @Composable
-private fun CreateShortcutView(
-    i: Int,
-    viewModel: ManageShortcutsViewModel,
-    showIconDialog: (tag: String) -> Unit,
-) {
+private fun CreateShortcutView(i: Int, viewModel: ManageShortcutsViewModel, showIconDialog: (tag: String) -> Unit) {
     val context = LocalContext.current
     var expandedPinnedShortcuts by remember { mutableStateOf(false) }
 
     val index = i + 1
     val shortcut = viewModel.shortcuts[i]
     val shortcutId = ManageShortcutsSettingsFragment.SHORTCUT_PREFIX + "_" + index
-
     Text(
         text = if (index < 6) {
             stringResource(id = R.string.shortcut) + " $index"
@@ -131,15 +129,31 @@ private fun CreateShortcutView(
                 )
                 Box {
                     OutlinedButton(onClick = { expandedPinnedShortcuts = true }) {
-                        Text(if (viewModel.shortcuts[i].id.value in pinnedShortCutIds) viewModel.shortcuts[i].id.value ?: "" else "")
+                        Text(
+                            if (viewModel.shortcuts[i].id.value in
+                                pinnedShortCutIds
+                            ) {
+                                viewModel.shortcuts[i].id.value ?: ""
+                            } else {
+                                ""
+                            },
+                        )
                     }
 
-                    DropdownMenu(expanded = expandedPinnedShortcuts, onDismissRequest = { expandedPinnedShortcuts = false }) {
+                    DropdownMenu(
+                        expanded = expandedPinnedShortcuts,
+                        onDismissRequest = {
+                            expandedPinnedShortcuts =
+                                false
+                        },
+                    ) {
                         for (item in pinnedShortCutIds) {
-                            DropdownMenuItem(onClick = {
-                                viewModel.setPinnedShortcutData(item)
-                                expandedPinnedShortcuts = false
-                            }) {
+                            DropdownMenuItem(
+                                onClick = {
+                                    viewModel.setPinnedShortcutData(item)
+                                    expandedPinnedShortcuts = false
+                                },
+                            ) {
                                 Text(item)
                             }
                         }
@@ -163,9 +177,11 @@ private fun CreateShortcutView(
             fontSize = 15.sp,
             modifier = Modifier.padding(end = 10.dp),
         )
-        OutlinedButton(onClick = {
-            showIconDialog(shortcutId)
-        }) {
+        OutlinedButton(
+            onClick = {
+                showIconDialog(shortcutId)
+            },
+        ) {
             val icon = viewModel.shortcuts[i].selectedIcon.value
             val painter = if (icon != null) {
                 remember(icon) { IconicsPainter(icon) }
@@ -194,7 +210,9 @@ private fun CreateShortcutView(
                 },
             )
         },
-        modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp),
     )
 
     TextField(
@@ -209,7 +227,9 @@ private fun CreateShortcutView(
                 },
             )
         },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
     )
 
     if (viewModel.servers.size > 1 || viewModel.servers.none { it.id == shortcut.serverId.value }) {
@@ -237,22 +257,33 @@ private fun CreateShortcutView(
             value = viewModel.shortcuts[i].path.value,
             onValueChange = { viewModel.shortcuts[i].path.value = it },
             label = { Text(stringResource(id = R.string.lovelace_view_dashboard)) },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri),
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Done,
+                autoCorrectEnabled = false,
+                keyboardType = KeyboardType.Uri,
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
         )
     } else {
-        SingleEntityPicker(
-            entities = viewModel.entities[shortcut.serverId.value].orEmpty(),
-            currentEntity = viewModel.shortcuts[i].path.value.split(":").getOrNull(1),
-            onEntityCleared = {
-                viewModel.shortcuts[i].path.value = ""
-            },
-            onEntitySelected = {
-                viewModel.shortcuts[i].path.value = "entityId:$it"
-                return@SingleEntityPicker true
-            },
-            modifier = Modifier.padding(bottom = 16.dp),
-        )
+        // TODO use new theme for Material3 components https://github.com/home-assistant/android/issues/6258
+        HATheme {
+            EntityPicker(
+                entities = viewModel.entities[shortcut.serverId.value].orEmpty(),
+                entityRegistry = viewModel.entityRegistry[shortcut.serverId.value],
+                deviceRegistry = viewModel.deviceRegistry[shortcut.serverId.value],
+                areaRegistry = viewModel.areaRegistry[shortcut.serverId.value],
+                selectedEntityId = viewModel.shortcuts[i].path.value.split(":").getOrNull(1),
+                onEntitySelectedId = { entityId ->
+                    viewModel.shortcuts[i].path.value = "entityId:$entityId"
+                },
+                onEntityCleared = {
+                    viewModel.shortcuts[i].path.value = ""
+                },
+                modifier = Modifier.padding(bottom = 16.dp),
+            )
+        }
     }
     for (item in viewModel.dynamicShortcuts) {
         if (item.id == shortcutId) {

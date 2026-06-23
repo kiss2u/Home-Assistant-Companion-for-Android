@@ -37,6 +37,7 @@ fun ExternalUrlInputView(
     url: String?,
     focusRequester: FocusRequester,
     onSaveUrl: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -45,7 +46,7 @@ fun ExternalUrlInputView(
     var urlError by remember { mutableStateOf(false) }
 
     Column(
-        modifier = Modifier.padding(horizontal = 16.dp),
+        modifier = modifier.padding(horizontal = 16.dp),
     ) {
         TextField(
             value = urlInput ?: "",
@@ -54,7 +55,11 @@ fun ExternalUrlInputView(
                 urlInput = it
                 urlError = false
             },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri),
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Done,
+                autoCorrectEnabled = false,
+                keyboardType = KeyboardType.Uri,
+            ),
             keyboardActions = KeyboardActions(
                 onDone = {
                     urlError = !performUrlUpdate(urlInput?.trim(), url, onSaveUrl)
@@ -112,11 +117,7 @@ fun ExternalUrlInputView(
  * Try saving the url with the value of the input.
  * @return boolean indicating if the url was saved successfully
  */
-private fun performUrlUpdate(
-    input: String?,
-    current: String?,
-    onSaveUrl: (String) -> Unit,
-): Boolean {
+private fun performUrlUpdate(input: String?, current: String?, onSaveUrl: (String) -> Unit): Boolean {
     return if (input != current && input?.toHttpUrlOrNull()?.toString() != current) {
         val urlValue = input?.toHttpUrlOrNull()
         val isValid = urlValue != null

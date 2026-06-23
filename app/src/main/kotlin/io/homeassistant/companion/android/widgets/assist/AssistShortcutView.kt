@@ -32,6 +32,8 @@ import io.homeassistant.companion.android.common.data.websocket.impl.entities.As
 import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.util.compose.ExposedDropdownMenu
 import io.homeassistant.companion.android.util.compose.ServerExposedDropdownMenu
+import io.homeassistant.companion.android.util.safeBottomPaddingValues
+import io.homeassistant.companion.android.util.safeTopWindowInsets
 
 @Composable
 fun AssistShortcutView(
@@ -41,6 +43,7 @@ fun AssistShortcutView(
     pipelines: AssistPipelineListResponse?,
     onSetServer: (Int) -> Unit,
     onSubmit: (String, Int, String?, Boolean) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Scaffold(
         topBar = {
@@ -48,10 +51,17 @@ fun AssistShortcutView(
                 title = { Text(stringResource(commonR.string.assist_shortcut)) },
                 backgroundColor = colorResource(commonR.color.colorBackground),
                 contentColor = colorResource(commonR.color.colorOnBackground),
+                windowInsets = safeTopWindowInsets(),
             )
         },
+        modifier = modifier,
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).verticalScroll(rememberScrollState())) {
+        Box(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(safeBottomPaddingValues())
+                .padding(padding),
+        ) {
             Column(modifier = Modifier.padding(all = 16.dp)) {
                 val assist = stringResource(commonR.string.assist)
                 var name by rememberSaveable { mutableStateOf(assist) }
@@ -115,7 +125,9 @@ fun AssistShortcutView(
                         Switch(
                             checked = startListening,
                             onCheckedChange = null,
-                            colors = SwitchDefaults.colors(uncheckedThumbColor = colorResource(commonR.color.colorSwitchUncheckedThumb)),
+                            colors = SwitchDefaults.colors(
+                                uncheckedThumbColor = colorResource(commonR.color.colorSwitchUncheckedThumb),
+                            ),
                         )
                     }
                 } else if (supported == false) {

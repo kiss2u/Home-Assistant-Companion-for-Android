@@ -60,7 +60,7 @@ class DisplaySensorManager : SensorManager {
         return listOf(screenBrightness, screenOffTimeout, screenOrientation, screenRotation)
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return emptyArray()
     }
 
@@ -68,9 +68,7 @@ class DisplaySensorManager : SensorManager {
         return "https://companion.home-assistant.io/docs/core/sensors#display-sensors"
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         updateScreenBrightness(context)
         updateScreenTimeout(context)
         updateScreenOrientation(context)

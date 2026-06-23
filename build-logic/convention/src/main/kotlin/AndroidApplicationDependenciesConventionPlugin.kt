@@ -26,20 +26,25 @@ class AndroidApplicationDependenciesConventionPlugin : Plugin<Project> {
             extensions.getByType<ApplicationExtension>().apply {
                 dependencies {
                     "implementation"(project(":common"))
+                    "implementation"(project(":microwakeword"))
 
                     "implementation"(libs.blurView)
                     "implementation"(libs.haze)
                     "implementation"(libs.haze.materials)
-                    "fullImplementation"(libs.androidx.health.connect.client)
+                    "implementation"(libs.androidx.health.connect.client)
 
                     "implementation"(libs.kotlin.stdlib)
                     "implementation"(libs.kotlin.reflect)
                     "implementation"(libs.kotlinx.coroutines.core)
                     "implementation"(libs.kotlinx.coroutines.android)
+                    "implementation"(libs.androidx.concurrent.ktx)
                     "fullImplementation"(libs.kotlinx.coroutines.play.services)
+
+                    "implementation"(libs.apache.commons.text)
 
                     "implementation"(libs.appcompat)
                     "implementation"(libs.androidx.lifecycle.runtime.ktx)
+                    "implementation"(libs.androidx.lifecycle.service)
                     "implementation"(libs.constraintlayout)
                     "implementation"(libs.recyclerview)
                     "implementation"(libs.preference.ktx)
@@ -70,19 +75,18 @@ class AndroidApplicationDependenciesConventionPlugin : Plugin<Project> {
                     }
                     "minimalImplementation"(libs.cronet.embedded)
 
-                    "implementation"(platform(libs.compose.bom))
                     "implementation"(libs.compose.animation)
-                    "implementation"(libs.compose.foundation)
                     "implementation"(libs.compose.material)
                     "implementation"(libs.compose.material.icons.core)
                     "implementation"(libs.compose.material.icons.extended)
                     "implementation"(libs.compose.runtime)
-                    "implementation"(libs.compose.ui)
-                    "implementation"(libs.compose.uiTooling)
                     "implementation"(libs.activity.compose)
                     "implementation"(libs.navigation.compose)
-                    "implementation"(libs.androidx.lifecycle.runtime.compose)
                     "implementation"(libs.core.remoteviews)
+                    "implementation"(libs.core.splashscreen)
+                    "implementation"(libs.core.ktx)
+                    "implementation"(libs.accompanist.permissions)
+                    "implementation"(libs.androidx.hilt.navigation.compose)
 
                     "implementation"(libs.bundles.androidx.glance)
 
@@ -94,18 +98,23 @@ class AndroidApplicationDependenciesConventionPlugin : Plugin<Project> {
 
                     "implementation"(libs.reorderable)
                     "implementation"(libs.changeLog)
+                    "implementation"(libs.aboutlibraries.compose.m3)
 
                     "implementation"(libs.zxing)
                     "implementation"(libs.improv)
 
                     "implementation"(libs.car.core)
 
-                    "androidTestImplementation"(platform(libs.compose.bom))
                     "androidTestImplementation"(libs.bundles.androidx.test)
-                    "androidTestImplementation"(libs.bundles.androidx.compose.ui.test)
                     "androidTestImplementation"(libs.leakcanary.android.instrumentation)
+                    "androidTestImplementation"(libs.hilt.android.testing)
 
                     "testImplementation"(libs.bundles.androidx.glance.testing)
+                    "testImplementation"(libs.navigation.test)
+                    "testImplementation"(libs.hilt.android.testing)
+                    "testImplementation"(libs.androidx.work.testing)
+
+                    "lintChecks"(libs.compose.lint.checks)
                 }
             }
         }

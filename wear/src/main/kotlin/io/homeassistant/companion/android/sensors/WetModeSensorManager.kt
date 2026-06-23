@@ -33,14 +33,11 @@ class WetModeSensorManager : SensorManager {
         )
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return emptyArray()
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-        intent: Intent?,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context, intent: Intent?) {
         if (intent?.action == "com.google.android.clockwork.actions.WET_MODE_STARTED") {
             wetModeEnabled = true
         } else if (intent?.action == "com.google.android.clockwork.actions.WET_MODE_ENDED") {

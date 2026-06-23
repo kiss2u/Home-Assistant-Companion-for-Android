@@ -13,19 +13,20 @@ import androidx.work.WorkerParameters
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.data.servers.ServerManager
 import io.homeassistant.companion.android.common.util.CHANNEL_SENSOR_WORKER
-import io.homeassistant.companion.android.database.AppDatabase
+import io.homeassistant.companion.android.common.util.CheckLocalNetworkPermissionUseCase
+import io.homeassistant.companion.android.common.util.SdkVersion
+import io.homeassistant.companion.android.database.DatabaseEntryPoint
 import java.lang.IllegalStateException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 
-abstract class SensorWorkerBase(
-    val appContext: Context,
-    workerParams: WorkerParameters,
-) : CoroutineWorker(appContext, workerParams) {
+abstract class SensorWorkerBase(val appContext: Context, workerParams: WorkerParameters) :
+    CoroutineWorker(appContext, workerParams) {
 
     protected abstract val serverManager: ServerManager
     protected abstract val sensorReceiver: SensorReceiverBase
+    protected abstract val checkLocalNetworkPermission: CheckLocalNetworkPermissionUseCase
 
     companion object {
         const val TAG = "SensorWorker"
@@ -35,14 +36,18 @@ abstract class SensorWorkerBase(
     private val notificationManager = appContext.getSystemService<NotificationManager>()!!
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val sensorDao = AppDatabase.getInstance(applicationContext).sensorDao()
+        val sensorDao = DatabaseEntryPoint.resolve(applicationContext).sensorDao()
         val enabledSensorCount = sensorDao.getEnabledCount() ?: 0
         if (
             enabledSensorCount > 0 ||
-            serverManager.defaultServers.any {
+            serverManager.servers().any {
                 serverManager.integrationRepository(it.id).isHomeAssistantVersionAtLeast(2022, 6, 0)
             }
         ) {
+            if (!checkLocalNetworkPermission()) {
+                Timber.d("Skipping sensor update: ACCESS_LOCAL_NETWORK permission missing")
+                return@withContext Result.success()
+            }
             createNotificationChannel()
             val notification = NotificationCompat.Builder(applicationContext, CHANNEL_SENSOR_WORKER)
                 .setSmallIcon(commonR.drawable.ic_stat_ic_notification)
@@ -53,7 +58,7 @@ abstract class SensorWorkerBase(
             val foregroundInfo = ForegroundInfo(
                 NOTIFICATION_ID,
                 notification,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                if (SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                 } else {
                     0
@@ -78,7 +83,7 @@ abstract class SensorWorkerBase(
 
         // Cleanup orphaned sensors that may have been created by a slow or long running update
         // writing data when deleting the server.
-        val currentServerIds = serverManager.defaultServers.map { it.id }
+        val currentServerIds = serverManager.servers().map { it.id }
         val orphanedSensors = sensorDao.getAllExceptServer(currentServerIds)
         if (orphanedSensors.any()) {
             Timber.i("Cleaning up ${orphanedSensors.size} orphaned sensor entries")
@@ -91,7 +96,7 @@ abstract class SensorWorkerBase(
     }
 
     protected fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (SdkVersion.isAtLeast(Build.VERSION_CODES.O)) {
             val notificationChannel = NotificationChannel(
                 CHANNEL_SENSOR_WORKER,
                 appContext.getString(commonR.string.sensor_updates),

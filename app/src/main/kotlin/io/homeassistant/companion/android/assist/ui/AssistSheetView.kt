@@ -97,6 +97,7 @@ fun AssistSheetView(
     onTextInput: (String) -> Unit,
     onMicrophoneInput: () -> Unit,
     onHide: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val coroutineScope = rememberCoroutineScope()
     val state = rememberModalBottomSheetState(
@@ -116,7 +117,7 @@ fun AssistSheetView(
         sheetState = state,
         sheetShape = RoundedCornerShape(topStart = sheetCornerRadius, topEnd = sheetCornerRadius),
         scrimColor = Color.Transparent,
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize(),
         sheetContent = {
             Box(
                 Modifier
@@ -170,7 +171,8 @@ fun AssistSheetHeader(
     fromFrontend: Boolean,
     onSelectPipeline: (Int, String) -> Unit,
     onManagePipelines: (() -> Unit)?,
-) = Column(verticalArrangement = Arrangement.Center) {
+    modifier: Modifier = Modifier,
+) = Column(verticalArrangement = Arrangement.Center, modifier = modifier) {
     Text(
         text = stringResource(if (fromFrontend) commonR.string.assist else commonR.string.app_name),
         fontSize = 20.sp,
@@ -189,7 +191,11 @@ fun AssistSheetHeader(
                     modifier = Modifier.clickable { pipelineShowList = !pipelineShowList },
                 ) {
                     Text(
-                        text = if (pipelineShowServer) "${currentPipeline.serverName}: ${currentPipeline.name}" else currentPipeline.name,
+                        text = if (pipelineShowServer) {
+                            "${currentPipeline.serverName}: ${currentPipeline.name}"
+                        } else {
+                            currentPipeline.name
+                        },
                         color = color,
                         style = MaterialTheme.typography.caption,
                     )
@@ -237,24 +243,29 @@ fun AssistSheetControls(
     onChangeInput: () -> Unit,
     onTextInput: (String) -> Unit,
     onMicrophoneInput: () -> Unit,
-) = Row(verticalAlignment = Alignment.CenterVertically) {
+    modifier: Modifier = Modifier,
+) = Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
     if (inputMode == null) { // Pipeline info has not yet loaded, empty space for now
         Spacer(modifier = Modifier.height(64.dp))
-        return
+        return@Row
     }
 
     if (inputMode == AssistViewModelBase.AssistInputMode.BLOCKED) { // No info and not recoverable, no space
-        return
+        return@Row
     }
 
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(inputMode) {
-        if (inputMode == AssistViewModelBase.AssistInputMode.TEXT || inputMode == AssistViewModelBase.AssistInputMode.TEXT_ONLY) {
+        if (inputMode == AssistViewModelBase.AssistInputMode.TEXT ||
+            inputMode == AssistViewModelBase.AssistInputMode.TEXT_ONLY
+        ) {
             focusRequester.requestFocus()
         }
     }
 
-    if (inputMode == AssistViewModelBase.AssistInputMode.TEXT || inputMode == AssistViewModelBase.AssistInputMode.TEXT_ONLY) {
+    if (inputMode == AssistViewModelBase.AssistInputMode.TEXT ||
+        inputMode == AssistViewModelBase.AssistInputMode.TEXT_ONLY
+    ) {
         var text by rememberSaveable(stateSaver = TextFieldValue.Saver) {
             mutableStateOf(TextFieldValue())
         }
@@ -336,7 +347,11 @@ fun AssistSheetControls(
                 Image(
                     asset = CommunityMaterial.Icon3.cmd_microphone,
                     contentDescription = stringResource(
-                        if (inputIsActive) commonR.string.assist_stop_listening else commonR.string.assist_start_listening,
+                        if (inputIsActive) {
+                            commonR.string.assist_stop_listening
+                        } else {
+                            commonR.string.assist_start_listening
+                        },
                     ),
                     colorFilter = ColorFilter.tint(LocalContentColor.current),
                     modifier = Modifier.size(28.dp),
@@ -355,10 +370,10 @@ fun AssistSheetControls(
 }
 
 @Composable
-fun SpeechBubble(text: String, isResponse: Boolean) {
+fun SpeechBubble(text: String, isResponse: Boolean, modifier: Modifier = Modifier) {
     Row(
         horizontalArrangement = if (isResponse) Arrangement.Start else Arrangement.End,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(
                 start = if (isResponse) 0.dp else 24.dp,

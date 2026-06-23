@@ -21,10 +21,8 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 
 @HiltViewModel
-class NfcViewModel @Inject constructor(
-    private val serverManager: ServerManager,
-    application: Application,
-) : AndroidViewModel(application) {
+class NfcViewModel @Inject constructor(private val serverManager: ServerManager, application: Application) :
+    AndroidViewModel(application) {
 
     var isNfcEnabled by mutableStateOf(false)
         private set
@@ -107,7 +105,7 @@ class NfcViewModel @Inject constructor(
     fun fireNfcTagEvent() {
         viewModelScope.launch {
             nfcTagIdentifier?.let {
-                val results = serverManager.defaultServers.map { server ->
+                val results = serverManager.servers().map { server ->
                     async {
                         try {
                             serverManager.integrationRepository(server.id).scanTag(hashMapOf("tag_id" to it))

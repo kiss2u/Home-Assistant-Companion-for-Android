@@ -5,6 +5,7 @@ import android.os.Build
 import android.provider.Settings
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.sensors.SensorManager
+import io.homeassistant.companion.android.common.util.SdkVersion
 import timber.log.Timber
 
 class BedtimeModeSensorManager : SensorManager {
@@ -30,7 +31,7 @@ class BedtimeModeSensorManager : SensorManager {
         return listOf(bedtimeMode)
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return emptyArray()
     }
 
@@ -39,7 +40,7 @@ class BedtimeModeSensorManager : SensorManager {
     }
 
     override fun hasSensor(context: Context): Boolean {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+        return SdkVersion.isAtLeast(Build.VERSION_CODES.R)
     }
 
     private suspend fun updateBedtimeMode(context: Context) {
@@ -48,7 +49,17 @@ class BedtimeModeSensorManager : SensorManager {
         }
 
         val state = try {
-            Settings.Global.getInt(context.contentResolver, if (Build.MANUFACTURER == "samsung") "setting_bedtime_mode_running_state" else "bedtime_mode") == 1
+            Settings.Global.getInt(
+                context.contentResolver,
+                if (Build.MANUFACTURER ==
+                    "samsung"
+                ) {
+                    "setting_bedtime_mode_running_state"
+                } else {
+                    "bedtime_mode"
+                },
+            ) ==
+                1
         } catch (e: Exception) {
             Timber.e(e, "Unable to update bedtime mode sensor")
             false

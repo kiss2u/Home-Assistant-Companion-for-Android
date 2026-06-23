@@ -29,7 +29,7 @@ import javax.inject.Provider
 import kotlinx.coroutines.flow.Flow
 
 interface WebSocketRepository {
-    fun getConnectionState(): WebSocketState?
+    fun getConnectionState(): WebSocketState
     fun shutdown()
     suspend fun sendPing(): Boolean
     suspend fun getCurrentUser(): CurrentUserResponse?
@@ -126,16 +126,17 @@ interface WebSocketRepository {
         outputTts: Boolean,
         pipelineId: String? = null,
         conversationId: String? = null,
+        wakeWordPhrase: String? = null,
     ): Flow<AssistPipelineEvent>?
 
     /**
      * Send voice data for an active Assist pipeline
      * @return `true`/`false` indicating if it was enqueued, or `null` on unexpected failures
      */
-    suspend fun sendVoiceData(binaryHandlerId: Int, data: ByteArray): Boolean?
+    suspend fun sendVoiceData(binaryHandlerId: Int, data: ByteArray): Boolean
 }
 
-class WebSocketRepositoryFactory @Inject internal constructor(
+internal class WebSocketRepositoryFactory @Inject internal constructor(
     private val coreFactory: WebSocketCoreFactory,
     // Use a Provider to avoid a dependency circle since serverManager needs WebSocketCoreFactory
     private val serverManagerProvider: Provider<ServerManager>,

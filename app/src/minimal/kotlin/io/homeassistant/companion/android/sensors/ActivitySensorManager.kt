@@ -6,7 +6,9 @@ import android.content.Intent
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.sensors.SensorManager
 
-class ActivitySensorManager : BroadcastReceiver(), SensorManager {
+class ActivitySensorManager :
+    BroadcastReceiver(),
+    SensorManager {
 
     override fun onReceive(context: Context, intent: Intent) {
         // Noop
@@ -18,7 +20,7 @@ class ActivitySensorManager : BroadcastReceiver(), SensorManager {
         return listOf()
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         // Noop
         return emptyArray()
     }

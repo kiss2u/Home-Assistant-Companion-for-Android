@@ -55,6 +55,7 @@ fun MatterCommissioningView(
     onConfirmCommissioning: () -> Unit,
     onClose: () -> Unit,
     onContinue: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     if (step == CommissioningFlowStep.NotStarted) return
 
@@ -66,7 +67,7 @@ fun MatterCommissioningView(
     )
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState()),
     ) {
@@ -106,17 +107,28 @@ fun MatterCommissioningView(
                     } else {
                         Text(
                             text = when (step) {
-                                CommissioningFlowStep.NotRegistered -> stringResource(commonR.string.matter_shared_status_not_registered)
-                                CommissioningFlowStep.SelectServer -> stringResource(commonR.string.matter_shared_status_select_server)
-                                CommissioningFlowStep.NotSupported -> stringResource(commonR.string.matter_shared_status_not_supported)
+                                CommissioningFlowStep.NotRegistered -> stringResource(
+                                    commonR.string.matter_shared_status_not_registered,
+                                )
+                                CommissioningFlowStep.SelectServer -> stringResource(
+                                    commonR.string.matter_shared_status_select_server,
+                                )
+                                CommissioningFlowStep.NotSupported -> stringResource(
+                                    commonR.string.matter_shared_status_not_supported,
+                                )
                                 CommissioningFlowStep.Confirmation -> {
                                     if (deviceName?.isNotBlank() == true) {
-                                        stringResource(commonR.string.matter_shared_status_confirmation_named, deviceName)
+                                        stringResource(
+                                            commonR.string.matter_shared_status_confirmation_named,
+                                            deviceName,
+                                        )
                                     } else {
                                         stringResource(commonR.string.matter_shared_status_confirmation)
                                     }
                                 }
-                                CommissioningFlowStep.Success -> stringResource(commonR.string.matter_shared_status_success)
+                                CommissioningFlowStep.Success -> stringResource(
+                                    commonR.string.matter_shared_status_success,
+                                )
                                 is CommissioningFlowStep.Failure -> {
                                     if (step.errorCode != null) {
                                         stringResource(commonR.string.matter_shared_status_failure_code, step.errorCode)
@@ -197,8 +209,8 @@ fun MatterCommissioningView(
 }
 
 @Composable
-fun MatterCommissioningViewHeader() {
-    Column(modifier = Modifier.fillMaxWidth()) {
+fun MatterCommissioningViewHeader(modifier: Modifier = Modifier) {
+    Column(modifier = modifier.fillMaxWidth()) {
         Spacer(modifier = Modifier.height(32.dp))
         Image(
             imageVector = ImageVector.vectorResource(R.drawable.ic_matter),
@@ -220,7 +232,7 @@ fun MatterCommissioningViewHeader() {
 
 @Preview
 @Composable
-fun PreviewMatterCommissioningView(
+private fun PreviewMatterCommissioningView(
     @PreviewParameter(MatterCommissioningViewPreviewStates::class) step: CommissioningFlowStep,
 ) {
     HomeAssistantAppTheme {
@@ -228,7 +240,14 @@ fun PreviewMatterCommissioningView(
             step = step,
             deviceName = "Manufacturer Matter Light",
             servers = listOf(
-                Server(id = 0, _name = "Home", listOrder = -1, connection = ServerConnectionInfo(externalUrl = ""), session = ServerSessionInfo(), user = ServerUserInfo()),
+                Server(
+                    id = 0,
+                    _name = "Home",
+                    listOrder = -1,
+                    connection = ServerConnectionInfo(externalUrl = ""),
+                    session = ServerSessionInfo(),
+                    user = ServerUserInfo(),
+                ),
             ),
             onSelectServer = { },
             onConfirmCommissioning = { },

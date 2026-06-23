@@ -1,8 +1,8 @@
 package io.homeassistant.companion.android.settings.server
 
 import androidx.preference.PreferenceDataStore
+import io.homeassistant.companion.android.common.data.network.WifiHelper
 import io.homeassistant.companion.android.common.data.servers.ServerManager
-import io.homeassistant.companion.android.common.data.wifi.WifiHelper
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -15,7 +15,8 @@ import timber.log.Timber
 class ServerSettingsPresenterImpl @Inject constructor(
     private val serverManager: ServerManager,
     private val wifiHelper: WifiHelper,
-) : ServerSettingsPresenter, PreferenceDataStore() {
+) : PreferenceDataStore(),
+    ServerSettingsPresenter {
 
     private val mainScope: CoroutineScope = CoroutineScope(Dispatchers.Main + Job())
     private lateinit var view: ServerSettingsView
@@ -42,7 +43,9 @@ class ServerSettingsPresenterImpl @Inject constructor(
             when (key) {
                 "trust_server" -> serverManager.integrationRepository(serverId).setTrusted(value)
                 "app_lock" -> serverManager.authenticationRepository(serverId).setLockEnabled(value)
-                "app_lock_home_bypass" -> serverManager.authenticationRepository(serverId).setLockHomeBypassEnabled(value)
+                "app_lock_home_bypass" -> serverManager.authenticationRepository(
+                    serverId,
+                ).setLockHomeBypassEnabled(value)
                 else -> throw IllegalArgumentException("No boolean found by this key: $key")
             }
         }
@@ -52,7 +55,7 @@ class ServerSettingsPresenterImpl @Inject constructor(
         when (key) {
             "server_name" -> serverManager.getServer(serverId)?.nameOverride
             "registration_name" -> serverManager.getServer(serverId)?.deviceName
-            "connection_internal" -> (serverManager.getServer(serverId)?.connection?.getUrl(isInternal = true, force = true) ?: "").toString()
+            "connection_internal" -> serverManager.getServer(serverId)?.connection?.internalUrl ?: ""
             "session_timeout" -> serverManager.integrationRepository(serverId).getSessionTimeOut().toString()
             else -> throw IllegalArgumentException("No string found by this key: $key")
         }
@@ -114,7 +117,7 @@ class ServerSettingsPresenterImpl @Inject constructor(
             serverManager.removeServer(serverId)
             view.onRemovedServer(
                 success = true,
-                hasAnyRemaining = serverManager.defaultServers.any { it.id != serverId },
+                hasAnyRemaining = serverManager.servers().any { it.id != serverId },
             )
         } ?: run {
             view.onRemovedServer(success = false, hasAnyRemaining = true)
@@ -122,39 +125,43 @@ class ServerSettingsPresenterImpl @Inject constructor(
     }
 
     override fun onFinish() {
-        if (serverManager.getServer()?.id != serverId) {
-            setAppActive(false)
+        runBlocking {
+            val currentServer = serverManager.getServer()
+            if (currentServer != null && currentServer.id != serverId) {
+                setAppActive(false)
+            }
         }
         mainScope.cancel()
     }
 
-    override fun hasMultipleServers(): Boolean = serverManager.defaultServers.size > 1
+    override suspend fun hasMultipleServers(): Boolean = serverManager.servers().size > 1
 
-    override fun updateServerName() =
-        view.updateServerName(serverManager.getServer(serverId)?.friendlyName ?: "")
+    override fun updateServerName() {
+        mainScope.launch {
+            view.updateServerName(serverManager.getServer(serverId)?.friendlyName ?: "")
+        }
+    }
 
     override fun updateUrlStatus() {
         mainScope.launch {
             serverManager.getServer(serverId)?.let {
                 view.updateExternalUrl(
-                    it.connection.getUrl(false)?.toString() ?: "",
-                    it.connection.useCloud && it.connection.canUseCloud(),
+                    serverManager.connectionStateProvider(it.id).getExternalUrl()?.toString() ?: "",
+                    it.connection.useCloud && it.connection.canUseCloud,
                 )
             }
         }
         mainScope.launch {
             val connection = serverManager.getServer(serverId)?.connection
             val ssids = connection?.internalSsids.orEmpty()
-            view.enableInternalConnection(ssids.isNotEmpty() || connection?.internalEthernet == true || connection?.internalVpn == true)
+            view.enableInternalConnection(
+                ssids.isNotEmpty() || connection?.internalEthernet == true || connection?.internalVpn == true,
+            )
             view.updateHomeNetwork(ssids, connection?.internalEthernet, connection?.internalVpn)
         }
     }
 
     override fun hasWifi(): Boolean = wifiHelper.hasWifi()
-
-    override fun isSsidUsed(): Boolean = runBlocking {
-        serverManager.getServer(serverId)?.connection?.internalSsids?.isNotEmpty() == true
-    }
 
     override fun clearSsids() {
         mainScope.launch {
@@ -174,13 +181,16 @@ class ServerSettingsPresenterImpl @Inject constructor(
     override fun setAppActive(active: Boolean) = runBlocking {
         try {
             serverManager.integrationRepository(serverId).setAppActive(active)
-        } catch (e: IllegalArgumentException) {
-            Timber.w("Cannot set app active $active for server $serverId")
-            Unit
+        } catch (e: IllegalStateException) {
+            Timber.w(e, "Cannot set app active $active for server $serverId")
         }
     }
 
-    override fun serverURL(): String? {
-        return serverManager.getServer(serverId)?.connection?.getUrl()?.toString()
+    override suspend fun serverURL(): String? {
+        return serverManager.connectionStateProvider(serverId).getExternalUrl()?.toString()
+    }
+
+    override suspend fun getAllowInsecureConnection(): Boolean? {
+        return serverManager.getServer(serverId)?.connection?.allowInsecureConnection
     }
 }

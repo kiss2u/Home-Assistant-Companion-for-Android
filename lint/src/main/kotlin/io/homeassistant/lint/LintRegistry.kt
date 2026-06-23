@@ -4,12 +4,20 @@ import com.android.tools.lint.client.api.IssueRegistry
 import com.android.tools.lint.client.api.Vendor
 import com.android.tools.lint.detector.api.CURRENT_API
 import com.android.tools.lint.detector.api.Issue
+import io.homeassistant.lint.annotation.NamedAnnotationDetector
+import io.homeassistant.lint.room.CoroutineDaoFunctionsIssue
+import io.homeassistant.lint.sdkversion.SdkVersionDetector
 import io.homeassistant.lint.serialization.MissingSerializableAnnotationIssue
+import io.homeassistant.lint.webview.EvaluateJavascriptDetector
 
 class LintRegistry : IssueRegistry() {
-    override val issues: List<Issue> = listOf<Issue>(
+    override val issues: List<Issue> = listOf(
         MissingSerializableAnnotationIssue.ISSUE,
         MissingSerializableAnnotationIssue.RECOMMENDATION,
+        CoroutineDaoFunctionsIssue.ISSUE,
+        NamedAnnotationDetector.ISSUE,
+        EvaluateJavascriptDetector.ISSUE,
+        SdkVersionDetector.ISSUE,
     )
 
     override val api: Int = CURRENT_API

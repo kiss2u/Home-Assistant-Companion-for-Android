@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.graphics.drawable.Icon
 import android.os.Build
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.getSystemService
@@ -19,14 +20,19 @@ import com.mikepenz.iconics.typeface.library.community.material.CommunityMateria
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.data.integration.Entity
-import io.homeassistant.companion.android.common.data.integration.domain
 import io.homeassistant.companion.android.common.data.integration.getIcon
+import io.homeassistant.companion.android.common.data.integration.isUsableInTile
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.data.websocket.impl.entities.AreaRegistryResponse
+import io.homeassistant.companion.android.common.data.websocket.impl.entities.DeviceRegistryResponse
+import io.homeassistant.companion.android.common.data.websocket.impl.entities.EntityRegistryResponse
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.database.qs.TileDao
 import io.homeassistant.companion.android.database.qs.TileEntity
 import io.homeassistant.companion.android.database.qs.getHighestInUse
 import io.homeassistant.companion.android.database.qs.isSetup
 import io.homeassistant.companion.android.database.qs.numberedId
+import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.qs.Tile10Service
 import io.homeassistant.companion.android.qs.Tile11Service
 import io.homeassistant.companion.android.qs.Tile12Service
@@ -71,6 +77,7 @@ import io.homeassistant.companion.android.util.icondialog.getIconByMdiName
 import io.homeassistant.companion.android.util.icondialog.mdiName
 import java.util.concurrent.Executors
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -141,18 +148,24 @@ class ManageTilesViewModel @Inject constructor(
     var selectedTile by mutableStateOf(slots[0])
         private set
 
-    var servers by mutableStateOf(serverManager.defaultServers)
+    var servers by mutableStateOf(emptyList<Server>())
         private set
     var sortedEntities by mutableStateOf<List<Entity>>(emptyList())
         private set
-    var selectedServerId by mutableStateOf(ServerManager.SERVER_ID_ACTIVE)
+    var entityRegistry by mutableStateOf<List<EntityRegistryResponse>>(emptyList())
+        private set
+    var deviceRegistry by mutableStateOf<List<DeviceRegistryResponse>>(emptyList())
+        private set
+    var areaRegistry by mutableStateOf<List<AreaRegistryResponse>>(emptyList())
+        private set
+    var selectedServerId by mutableIntStateOf(ServerManager.SERVER_ID_ACTIVE)
         private set
     var selectedIconId by mutableStateOf<String?>(null)
         private set
     var selectedEntityId by mutableStateOf("")
     var tileLabel by mutableStateOf("")
     var tileSubtitle by mutableStateOf<String?>(null)
-    var submitButtonLabel by mutableStateOf(commonR.string.tile_save)
+    var submitButtonLabel by mutableIntStateOf(commonR.string.tile_save)
         private set
     var selectedShouldVibrate by mutableStateOf(false)
     var tileAuthRequired by mutableStateOf(false)
@@ -162,6 +175,9 @@ class ManageTilesViewModel @Inject constructor(
     private var selectedTileAdded = false
 
     private val entities = mutableMapOf<Int, List<Entity>>()
+    private val entityRegistries = mutableMapOf<Int, List<EntityRegistryResponse>>()
+    private val deviceRegistries = mutableMapOf<Int, List<DeviceRegistryResponse>>()
+    private val areaRegistries = mutableMapOf<Int, List<AreaRegistryResponse>>()
 
     private val _tileInfoSnackbar = MutableSharedFlow<Int>(replay = 1)
     var tileInfoSnackbar = _tileInfoSnackbar.asSharedFlow()
@@ -179,15 +195,15 @@ class ManageTilesViewModel @Inject constructor(
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            serverManager.defaultServers.map {
+            val servers = serverManager.servers()
+            this@ManageTilesViewModel.servers = servers
+            servers.map { server ->
+                val serverId = server.id
                 async {
-                    entities[it.id] = try {
-                        serverManager.integrationRepository(it.id).getEntities().orEmpty()
-                            .filter { it.domain in ManageTilesFragment.validDomains }
-                    } catch (e: Exception) {
-                        Timber.e(e, "Couldn't load entities for server")
-                        emptyList()
-                    }
+                    launch { entities[serverId] = loadEntitiesForServer(serverId) }
+                    launch { entityRegistries[serverId] = loadEntityRegistry(serverId) }
+                    launch { deviceRegistries[serverId] = loadDeviceRegistry(serverId) }
+                    launch { areaRegistries[serverId] = loadAreaRegistry(serverId) }
                 }
             }.awaitAll()
             withContext(Dispatchers.Main) {
@@ -213,7 +229,7 @@ class ManageTilesViewModel @Inject constructor(
                 selectedShouldVibrate = it?.shouldVibrate ?: false
                 tileAuthRequired = it?.authRequired ?: false
                 submitButtonLabel =
-                    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2 || it?.added == true) {
+                    if (!SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU) || it?.added == true) {
                         commonR.string.tile_save
                     } else {
                         commonR.string.tile_add
@@ -227,7 +243,8 @@ class ManageTilesViewModel @Inject constructor(
     }
 
     fun selectServerId(serverId: Int) {
-        val resetEntity = serverId != selectedServerId && entities[serverId]?.none { it.entityId == selectedEntityId } == true
+        val resetEntity =
+            serverId != selectedServerId && entities[serverId]?.none { it.entityId == selectedEntityId } == true
         selectedServerId = serverId
         loadEntities(serverId)
         selectEntityId(if (resetEntity) "" else selectedEntityId)
@@ -235,6 +252,9 @@ class ManageTilesViewModel @Inject constructor(
 
     private fun loadEntities(serverId: Int) {
         sortedEntities = entities[serverId] ?: emptyList()
+        entityRegistry = entityRegistries[serverId] ?: emptyList()
+        deviceRegistry = deviceRegistries[serverId] ?: emptyList()
+        areaRegistry = areaRegistries[serverId] ?: emptyList()
     }
 
     fun selectEntityId(entityId: String) {
@@ -277,7 +297,7 @@ class ManageTilesViewModel @Inject constructor(
             val highestInUse = tileDao.getHighestInUse()?.numberedId ?: 0
             updateActiveTileServices(highestInUse, app)
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !selectedTileAdded) {
+            if (SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU) && !selectedTileAdded) {
                 val statusBarManager = app.getSystemService<StatusBarManager>()
                 val service = idToTileService[selectedTile.id] ?: Tile1Service::class.java
                 val icon = selectedIcon?.let {
@@ -308,5 +328,42 @@ class ManageTilesViewModel @Inject constructor(
                 _tileInfoSnackbar.emit(commonR.string.tile_updated)
             }
         }
+    }
+
+    private suspend fun loadEntitiesForServer(serverId: Int): List<Entity> = try {
+        serverManager.integrationRepository(serverId).getEntities().orEmpty()
+            .filter(Entity::isUsableInTile)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.e(e, "Couldn't load entities for server")
+        emptyList()
+    }
+
+    private suspend fun loadEntityRegistry(serverId: Int): List<EntityRegistryResponse> = try {
+        serverManager.webSocketRepository(serverId).getEntityRegistry().orEmpty()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.e(e, "Couldn't load entity registry for server")
+        emptyList()
+    }
+
+    private suspend fun loadDeviceRegistry(serverId: Int): List<DeviceRegistryResponse> = try {
+        serverManager.webSocketRepository(serverId).getDeviceRegistry().orEmpty()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.e(e, "Couldn't load device registry for server")
+        emptyList()
+    }
+
+    private suspend fun loadAreaRegistry(serverId: Int): List<AreaRegistryResponse> = try {
+        serverManager.webSocketRepository(serverId).getAreaRegistry().orEmpty()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.e(e, "Couldn't load area registry for server")
+        emptyList()
     }
 }

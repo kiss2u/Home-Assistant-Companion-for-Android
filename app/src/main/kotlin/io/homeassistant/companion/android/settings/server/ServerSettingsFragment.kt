@@ -2,7 +2,6 @@ package io.homeassistant.companion.android.settings.server
 
 import android.content.Intent
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -17,6 +16,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.MenuHost
 import androidx.core.view.MenuProvider
 import androidx.fragment.app.commit
+import androidx.fragment.app.setFragmentResultListener
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.EditTextPreference
@@ -28,13 +28,15 @@ import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.SwitchPreference
 import dagger.hilt.android.AndroidEntryPoint
 import io.homeassistant.companion.android.R
-import io.homeassistant.companion.android.authenticator.Authenticator
+import io.homeassistant.companion.android.authenticator.Authenticator.Companion.AuthenticationResult
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.launch.LaunchActivity
+import io.homeassistant.companion.android.settings.ConnectionSecurityLevelFragment
 import io.homeassistant.companion.android.settings.SettingsActivity
 import io.homeassistant.companion.android.settings.ssid.SsidFragment
 import io.homeassistant.companion.android.settings.url.ExternalUrlFragment
 import io.homeassistant.companion.android.settings.websocket.WebsocketSettingFragment
+import io.homeassistant.companion.android.util.QuestUtil
 import io.homeassistant.companion.android.util.applyBottomSafeDrawingInsets
 import io.homeassistant.companion.android.webview.WebViewActivity
 import java.net.URLEncoder
@@ -43,10 +45,12 @@ import kotlinx.coroutines.launch
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import timber.log.Timber
 
-private const val BASE_INVITE_URL = "https://my.home-assistant.io/invite/#"
+private const val BASE_INVITE_URL = "https://my.home-assistant.io/invite/#url="
 
 @AndroidEntryPoint
-class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
+class ServerSettingsFragment :
+    PreferenceFragmentCompat(),
+    ServerSettingsView {
 
     companion object {
         const val TAG = "ServerSettingsFragment"
@@ -85,21 +89,23 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
             isValid
         }
 
-        if (presenter.hasMultipleServers()) {
-            val activateClickListener = OnPreferenceClickListener {
-                val intent = WebViewActivity.newInstance(requireContext(), null, serverId).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        lifecycleScope.launch {
+            if (presenter.hasMultipleServers()) {
+                val activateClickListener = OnPreferenceClickListener {
+                    val intent = WebViewActivity.newInstance(requireContext(), null, serverId).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    }
+                    requireContext().startActivity(intent)
+                    return@OnPreferenceClickListener true
                 }
-                requireContext().startActivity(intent)
-                return@OnPreferenceClickListener true
-            }
-            findPreference<Preference>("activate_server")?.let {
-                it.isVisible = true
-                it.onPreferenceClickListener = activateClickListener
-            }
-            findPreference<Preference>("activate_server_hint")?.let {
-                it.isVisible = true
-                it.onPreferenceClickListener = activateClickListener
+                findPreference<Preference>("activate_server")?.let {
+                    it.isVisible = true
+                    it.onPreferenceClickListener = activateClickListener
+                }
+                findPreference<Preference>("activate_server_hint")?.let {
+                    it.isVisible = true
+                    it.onPreferenceClickListener = activateClickListener
+                }
             }
         }
 
@@ -111,7 +117,10 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
                 findPreference<EditTextPreference>("session_timeout")?.isVisible = false
             } else {
                 val settingsActivity = requireActivity() as SettingsActivity
-                val canAuth = settingsActivity.requestAuthentication(getString(commonR.string.biometric_set_title), ::setLockAuthenticationResult)
+                val canAuth = settingsActivity.requestAuthentication(
+                    getString(commonR.string.biometric_set_title),
+                    ::setLockAuthenticationResult,
+                )
                 isValid = canAuth
 
                 if (!canAuth) {
@@ -138,10 +147,9 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
 
         findPreference<EditTextPreference>("connection_internal")?.let {
             it.setOnBindEditTextListener { edit ->
-                edit.inputType = InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                edit.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             }
-            it.onPreferenceChangeListener =
-                onChangeUrlValidator
+            it.onPreferenceChangeListener = onChangeUrlValidator
             it.isVisible = presenter.hasWifi()
         }
 
@@ -172,7 +180,17 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
             it.isVisible = presenter.hasWifi()
         }
 
-        findPreference<PreferenceCategory>("security_category")?.isVisible = Build.MODEL != "Quest"
+        findPreference<Preference>("connection_security_level")?.let {
+            it.setOnPreferenceClickListener {
+                parentFragmentManager.commit {
+                    replace(R.id.content_full_screen, ConnectionSecurityLevelFragment.newInstance(serverId))
+                    addToBackStack(null)
+                }
+                return@setOnPreferenceClickListener true
+            }
+        }
+
+        findPreference<PreferenceCategory>("security_category")?.isVisible = !QuestUtil.isQuest
 
         findPreference<Preference>("websocket")?.let {
             it.setOnPreferenceClickListener {
@@ -194,13 +212,16 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
                     .setMessage(commonR.string.server_delete_confirm)
                     .setPositiveButton(commonR.string.delete) { dialog, _ ->
                         dialog.cancel()
-                        serverDeleteHandler.postDelayed({
-                            serverDeleteDialog = AlertDialog.Builder(requireContext())
-                                .setMessage(commonR.string.server_delete_working)
-                                .setCancelable(false)
-                                .create()
-                            serverDeleteDialog?.show()
-                        }, 2500L)
+                        serverDeleteHandler.postDelayed(
+                            {
+                                serverDeleteDialog = AlertDialog.Builder(requireContext())
+                                    .setMessage(commonR.string.server_delete_working)
+                                    .setCancelable(false)
+                                    .create()
+                                serverDeleteDialog?.show()
+                            },
+                            2500L,
+                        )
                         lifecycleScope.launch { presenter.deleteServer() }
                     }
                     .setNegativeButton(commonR.string.cancel, null)
@@ -214,6 +235,10 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
         super.onViewCreated(view, savedInstanceState)
         applyBottomSafeDrawingInsets()
 
+        setFragmentResultListener(ConnectionSecurityLevelFragment.RESULT_KEY) { _, _ ->
+            updateSecurityLevelSummary()
+        }
+
         val menuHost: MenuHost = requireActivity()
         menuHost.addMenuProvider(
             object : MenuProvider {
@@ -223,21 +248,34 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
 
                 override fun onPrepareMenu(menu: Menu) {
                     super.onPrepareMenu(menu)
-                    menu.findItem(R.id.share_server).isVisible = presenter.serverURL() != null
+                    lifecycleScope.launch {
+                        menu.findItem(R.id.share_server).isVisible = presenter.serverURL() != null
+                    }
                 }
 
                 override fun onMenuItemSelected(menuItem: MenuItem): Boolean = when (menuItem.itemId) {
                     R.id.share_server -> {
                         menuItem.isChecked = true
-                        val sendIntent: Intent = Intent().apply {
-                            action = Intent.ACTION_SEND
-                            putExtra(Intent.EXTRA_SUBJECT, getString(commonR.string.join_our_server))
-                            putExtra(Intent.EXTRA_TEXT, "$BASE_INVITE_URL${URLEncoder.encode(presenter.serverURL(), Charsets.UTF_8.toString())}")
-                            type = "text/plain"
+                        lifecycleScope.launch {
+                            val sendIntent: Intent = Intent().apply {
+                                action = Intent.ACTION_SEND
+                                putExtra(Intent.EXTRA_SUBJECT, getString(commonR.string.join_our_server))
+                                putExtra(
+                                    Intent.EXTRA_TEXT,
+                                    "$BASE_INVITE_URL${
+                                        URLEncoder.encode(
+                                            presenter.serverURL(),
+                                            Charsets.UTF_8.toString(),
+                                        )
+                                    }",
+                                )
+                                type = "text/plain"
+                            }
+                            startActivity(Intent.createChooser(sendIntent, null))
                         }
-                        startActivity(Intent.createChooser(sendIntent, null))
                         true
                     }
+
                     else -> false
                 }
             },
@@ -254,7 +292,14 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
     }
 
     override fun enableInternalConnection(isEnabled: Boolean) {
-        val iconTint = if (isEnabled) ContextCompat.getColor(requireContext(), commonR.color.colorAccent) else Color.DKGRAY
+        val iconTint = if (isEnabled) {
+            ContextCompat.getColor(
+                requireContext(),
+                commonR.color.colorAccent,
+            )
+        } else {
+            Color.DKGRAY
+        }
 
         findPreference<EditTextPreference>("connection_internal")?.let {
             it.isEnabled = isEnabled
@@ -307,8 +352,8 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
         }
     }
 
-    private fun setLockAuthenticationResult(result: Int): Boolean {
-        val success = result == Authenticator.SUCCESS
+    private fun setLockAuthenticationResult(result: AuthenticationResult): Boolean {
+        val success = result == AuthenticationResult.SUCCESS
         val switchLock = findPreference<SwitchPreference>("app_lock")
         switchLock?.isChecked = success
 
@@ -317,7 +362,7 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
 
         findPreference<SwitchPreference>("app_lock_home_bypass")?.isVisible = success && presenter.hasWifi()
         findPreference<EditTextPreference>("session_timeout")?.isVisible = success
-        return (result == Authenticator.SUCCESS || result == Authenticator.CANCELED)
+        return (result == AuthenticationResult.SUCCESS || result == AuthenticationResult.CANCELED)
     }
 
     override fun onRemovedServer(success: Boolean, hasAnyRemaining: Boolean) {
@@ -338,6 +383,20 @@ class ServerSettingsFragment : ServerSettingsView, PreferenceFragmentCompat() {
 
         presenter.updateServerName()
         presenter.updateUrlStatus()
+        updateSecurityLevelSummary()
+    }
+
+    private fun updateSecurityLevelSummary() {
+        lifecycleScope.launch {
+            findPreference<Preference>("connection_security_level")?.let { preference ->
+                val summaryId = when (presenter.getAllowInsecureConnection()) {
+                    true -> commonR.string.connection_security_less_secure
+                    false -> commonR.string.connection_security_most_secure
+                    null -> commonR.string.connection_security_level_default_summary
+                }
+                preference.summary = getString(summaryId)
+            }
+        }
     }
 
     override fun onDestroy() {

@@ -5,7 +5,6 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import com.google.android.gms.location.ActivityRecognition
 import com.google.android.gms.location.ActivityRecognitionResult
@@ -18,12 +17,19 @@ import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.sensors.SensorManager
 import io.homeassistant.companion.android.common.sensors.SensorReceiverBase
 import io.homeassistant.companion.android.common.util.STATE_UNKNOWN
+import io.homeassistant.companion.android.common.util.SdkVersion
+import io.homeassistant.companion.android.common.util.isAutomotive
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
 @AndroidEntryPoint
-class ActivitySensorManager : BroadcastReceiver(), SensorManager {
+class ActivitySensorManager :
+    BroadcastReceiver(),
+    SensorManager {
 
     companion object {
         const val ACTION_UPDATE_ACTIVITY =
@@ -65,10 +71,12 @@ class ActivitySensorManager : BroadcastReceiver(), SensorManager {
         )
     }
 
+    private val ioScope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job())
+
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            ACTION_UPDATE_ACTIVITY -> handleActivityUpdate(intent, context)
-            ACTION_SLEEP_ACTIVITY -> sensorWorkerScope.launch { handleSleepUpdate(intent, context) }
+            ACTION_UPDATE_ACTIVITY -> ioScope.launch { handleActivityUpdate(intent, context) }
+            ACTION_SLEEP_ACTIVITY -> ioScope.launch { handleSleepUpdate(intent, context) }
             else -> Timber.w("Unknown intent action: ${intent.action}!")
         }
     }
@@ -95,7 +103,7 @@ class ActivitySensorManager : BroadcastReceiver(), SensorManager {
         )
     }
 
-    private fun handleActivityUpdate(intent: Intent, context: Context) {
+    private suspend fun handleActivityUpdate(intent: Intent, context: Context) {
         Timber.d("Received activity update.")
         if (ActivityRecognitionResult.hasResult(intent)) {
             val result = ActivityRecognitionResult.extractResult(intent)
@@ -112,7 +120,8 @@ class ActivitySensorManager : BroadcastReceiver(), SensorManager {
                     probActivity,
                     getSensorIcon(probActivity),
                     result.probableActivities.associate { typeToString(it) to it.confidence }.plus(
-                        "options" to listOf("in_vehicle", "on_bicycle", "on_foot", "still", "tilting", "walking", "running"),
+                        "options" to
+                            listOf("in_vehicle", "on_bicycle", "on_foot", "still", "tilting", "walking", "running"),
                     ),
                 )
             }
@@ -202,8 +211,8 @@ class ActivitySensorManager : BroadcastReceiver(), SensorManager {
         return listOf(activity, sleepConfidence, sleepSegment)
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
+        return if (SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) {
             arrayOf(
                 Manifest.permission.ACTIVITY_RECOGNITION,
             )
@@ -213,11 +222,7 @@ class ActivitySensorManager : BroadcastReceiver(), SensorManager {
     }
 
     override fun hasSensor(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            !context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)
-        } else {
-            true
-        }
+        return !context.isAutomotive()
     }
 
     override suspend fun requestSensorUpdate(context: Context) {
@@ -236,11 +241,13 @@ class ActivitySensorManager : BroadcastReceiver(), SensorManager {
             }
         }
         if ((
-                isEnabled(context, sleepConfidence) || isEnabled(
-                    context,
-                    sleepSegment,
-                )
-                ) && !sleepRegistration
+                isEnabled(context, sleepConfidence) ||
+                    isEnabled(
+                        context,
+                        sleepSegment,
+                    )
+                ) &&
+            !sleepRegistration
         ) {
             val pendingIntent = getSleepPendingIntent(context)
             Timber.d("Registering for sleep updates")

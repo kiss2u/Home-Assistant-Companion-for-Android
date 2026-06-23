@@ -9,7 +9,6 @@ import android.service.controls.templates.StatelessTemplate
 import androidx.annotation.RequiresApi
 import io.homeassistant.companion.android.common.data.integration.Entity
 import io.homeassistant.companion.android.common.data.integration.IntegrationRepository
-import io.homeassistant.companion.android.common.data.integration.domain
 import io.homeassistant.companion.android.common.util.capitalize
 import java.util.Locale
 
@@ -31,16 +30,12 @@ object HaFailedControl : HaControl {
         return control
     }
 
-    override fun getDeviceType(entity: Entity): Int =
-        DeviceTypes.TYPE_UNKNOWN
+    override fun getDeviceType(entity: Entity): Int = DeviceTypes.TYPE_UNKNOWN
 
     override fun getDomainString(context: Context, entity: Entity): String =
         entity.domain.capitalize(Locale.getDefault())
 
-    override suspend fun performAction(
-        integrationRepository: IntegrationRepository,
-        action: ControlAction,
-    ): Boolean {
+    override suspend fun performAction(integrationRepository: IntegrationRepository, action: ControlAction): Boolean {
         return false
     }
 }

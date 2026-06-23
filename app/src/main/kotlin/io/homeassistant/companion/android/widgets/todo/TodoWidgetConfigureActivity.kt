@@ -1,14 +1,12 @@
 package io.homeassistant.companion.android.widgets.todo
 
-import android.annotation.SuppressLint
-import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.clickable
@@ -34,21 +32,27 @@ import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
+import dagger.hilt.android.lifecycle.withCreationCallback
 import io.homeassistant.companion.android.BaseActivity
-import io.homeassistant.companion.android.common.R
+import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.common.compose.theme.HATheme
 import io.homeassistant.companion.android.common.data.integration.Entity
+import io.homeassistant.companion.android.common.data.websocket.impl.entities.AreaRegistryResponse
+import io.homeassistant.companion.android.common.data.websocket.impl.entities.DeviceRegistryResponse
+import io.homeassistant.companion.android.common.data.websocket.impl.entities.EntityRegistryResponse
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.database.widget.WidgetBackgroundType
 import io.homeassistant.companion.android.settings.widgets.ManageWidgetsViewModel
 import io.homeassistant.companion.android.util.compose.ExposedDropdownMenu
 import io.homeassistant.companion.android.util.compose.HomeAssistantAppTheme
 import io.homeassistant.companion.android.util.compose.ServerExposedDropdownMenu
-import io.homeassistant.companion.android.util.compose.SingleEntityPicker
 import io.homeassistant.companion.android.util.compose.WidgetBackgroundTypeExposedDropdownMenu
+import io.homeassistant.companion.android.util.compose.entity.EntityPicker
+import io.homeassistant.companion.android.util.enableEdgeToEdgeCompat
 import io.homeassistant.companion.android.util.getHexForColor
 import io.homeassistant.companion.android.util.previewEntity1
 import io.homeassistant.companion.android.util.previewEntity2
@@ -57,23 +61,37 @@ import io.homeassistant.companion.android.util.previewServer2
 import io.homeassistant.companion.android.util.safeBottomWindowInsets
 import io.homeassistant.companion.android.util.safeTopWindowInsets
 import kotlinx.coroutines.launch
-import timber.log.Timber
 
 @AndroidEntryPoint
 class TodoWidgetConfigureActivity : BaseActivity() {
     companion object {
-        private const val PIN_WIDGET_CALLBACK = "io.homeassistant.companion.android.widgets.todo.TodoWidgetConfigureActivity.PIN_WIDGET_CALLBACK"
+        private const val FOR_ENTITY = "for_entity"
+
+        fun newInstance(context: Context, entityId: String): Intent {
+            return Intent(context, TodoWidgetConfigureActivity::class.java).apply {
+                putExtra(FOR_ENTITY, entityId)
+                putExtra(ManageWidgetsViewModel.CONFIGURE_REQUEST_LAUNCHER, true)
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+        }
     }
 
-    private val viewModel: TodoWidgetConfigureViewModel by viewModels()
+    private val viewModel: TodoWidgetConfigureViewModel by viewModels(
+        extrasProducer = {
+            defaultViewModelCreationExtras.withCreationCallback<TodoWidgetConfigureViewModel.Factory> { factory ->
+                factory.create(intent.extras?.getString(FOR_ENTITY, null))
+            }
+        },
+    )
+
     private val supportedTextColors: List<String>
         get() = listOf(
-            application.getHexForColor(R.color.colorWidgetButtonLabelBlack),
+            application.getHexForColor(commonR.color.colorWidgetButtonLabelBlack),
             application.getHexForColor(android.R.color.white),
         )
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
+        enableEdgeToEdgeCompat()
         super.onCreate(savedInstanceState)
 
         // Set the result to CANCELED.  This will cause the widget host to cancel
@@ -90,88 +108,65 @@ class TodoWidgetConfigureActivity : BaseActivity() {
             HomeAssistantAppTheme {
                 TodoWidgetConfigureScreen(
                     viewModel = viewModel,
-                    onAddWidget = { onSetupWidget() },
+                    onActionClick = { onActionClick() },
                 )
             }
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        val extras = intent.extras
-        if (extras == null) {
-            Timber.d("Received new intent without data")
-            return
-        }
-        val widgetId = extras.getInt(
-            AppWidgetManager.EXTRA_APPWIDGET_ID,
-            AppWidgetManager.INVALID_APPWIDGET_ID,
-        )
-        if (extras.getBoolean(PIN_WIDGET_CALLBACK, false)) {
-            viewModel.onSetup(widgetId, supportedTextColors)
-            onAddWidget()
-        }
-    }
-
-    @SuppressLint("ObsoleteSdkInt")
-    private fun onSetupWidget() {
-        if (intent.extras?.getBoolean(ManageWidgetsViewModel.CONFIGURE_REQUEST_LAUNCHER, false) == true) {
-            if (
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                viewModel.isValidSelection()
-            ) {
-                requestPinWidget()
+    private fun onActionClick() {
+        lifecycleScope.launch {
+            if (intent.extras?.getBoolean(ManageWidgetsViewModel.CONFIGURE_REQUEST_LAUNCHER, false) == true) {
+                if (
+                    SdkVersion.isAtLeast(Build.VERSION_CODES.O) &&
+                    viewModel.isValidSelection()
+                ) {
+                    requestPinWidget()
+                } else {
+                    showAddWidgetError()
+                }
             } else {
-                showAddWidgetError()
+                onUpdateWidget()
             }
-        } else {
-            onAddWidget()
         }
     }
 
-    @SuppressLint("ObsoleteSdkInt")
     @RequiresApi(Build.VERSION_CODES.O)
     private fun requestPinWidget() {
         val context = this@TodoWidgetConfigureActivity
         lifecycleScope.launch {
-            GlanceAppWidgetManager(context)
-                .requestPinGlanceAppWidget(
-                    TodoWidget::class.java,
-                    successCallback = PendingIntent.getActivity(
-                        context,
-                        System.currentTimeMillis().toInt(),
-                        Intent(context, TodoWidgetConfigureActivity::class.java)
-                            .putExtra(PIN_WIDGET_CALLBACK, true)
-                            .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
-                    ),
-                )
+            viewModel.requestWidgetCreation(context)
+            finish()
         }
     }
 
-    private fun onAddWidget() {
+    private suspend fun onUpdateWidget() {
         try {
-            viewModel.addWidgetConfiguration()
+            viewModel.updateWidgetConfiguration()
             setResult(RESULT_OK)
-            viewModel.updateWidget(this)
+            viewModel.updateWidget(this@TodoWidgetConfigureActivity)
             finish()
-        } catch (_: IllegalStateException) {
-            showAddWidgetError()
+        } catch (_: Exception) {
+            showUpdateWidgetError()
         }
     }
 
     private fun showAddWidgetError() {
-        Toast.makeText(applicationContext, R.string.widget_creation_error, Toast.LENGTH_LONG).show()
+        Toast.makeText(applicationContext, commonR.string.widget_creation_error, Toast.LENGTH_LONG).show()
+    }
+
+    private fun showUpdateWidgetError() {
+        Toast.makeText(applicationContext, commonR.string.widget_update_error, Toast.LENGTH_LONG).show()
     }
 }
 
 @Composable
-private fun TodoWidgetConfigureScreen(
-    viewModel: TodoWidgetConfigureViewModel,
-    onAddWidget: () -> Unit,
-) {
-    val servers by viewModel.servers.collectAsStateWithLifecycle()
+private fun TodoWidgetConfigureScreen(viewModel: TodoWidgetConfigureViewModel, onActionClick: () -> Unit) {
+    val servers by viewModel.servers.collectAsStateWithLifecycle(emptyList())
     val entities by viewModel.entities.collectAsStateWithLifecycle()
+    val entityRegistry by viewModel.entityRegistry.collectAsStateWithLifecycle()
+    val deviceRegistry by viewModel.deviceRegistry.collectAsStateWithLifecycle()
+    val areaRegistry by viewModel.areaRegistry.collectAsStateWithLifecycle()
 
     TodoWidgetConfigureView(
         servers = servers,
@@ -187,7 +182,10 @@ private fun TodoWidgetConfigureScreen(
         textColorIndex = viewModel.textColorIndex,
         onTextColorSelected = { viewModel.textColorIndex = it },
         isUpdateWidget = viewModel.isUpdateWidget,
-        onAddWidget = onAddWidget,
+        onActionClick = onActionClick,
+        entityRegistry = entityRegistry,
+        deviceRegistry = deviceRegistry,
+        areaRegistry = areaRegistry,
     )
 }
 
@@ -206,15 +204,18 @@ private fun TodoWidgetConfigureView(
     textColorIndex: Int,
     onTextColorSelected: (Int) -> Unit,
     isUpdateWidget: Boolean,
-    onAddWidget: () -> Unit,
+    onActionClick: () -> Unit,
+    entityRegistry: List<EntityRegistryResponse>? = null,
+    deviceRegistry: List<DeviceRegistryResponse>? = null,
+    areaRegistry: List<AreaRegistryResponse>? = null,
 ) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.widget_todo_label)) },
+                title = { Text(stringResource(commonR.string.widget_todo_label)) },
                 windowInsets = safeTopWindowInsets(),
-                backgroundColor = colorResource(R.color.colorBackground),
-                contentColor = colorResource(R.color.colorOnBackground),
+                backgroundColor = colorResource(commonR.color.colorBackground),
+                contentColor = colorResource(commonR.color.colorOnBackground),
             )
         },
     ) { padding ->
@@ -235,21 +236,25 @@ private fun TodoWidgetConfigureView(
                 )
             }
 
-            SingleEntityPicker(
-                entities = entities,
-                currentEntity = selectedEntityId,
-                onEntityCleared = { onEntitySelected(null) },
-                onEntitySelected = {
-                    onEntitySelected(it)
-                    true
-                },
-            )
+            // TODO use new theme for Material3 components https://github.com/home-assistant/android/issues/6303
+            HATheme {
+                EntityPicker(
+                    entities = entities,
+                    selectedEntityId = selectedEntityId,
+                    onEntitySelectedId = { onEntitySelected(it) },
+                    onEntityCleared = { onEntitySelected(null) },
+                    entityRegistry = entityRegistry,
+                    deviceRegistry = deviceRegistry,
+                    areaRegistry = areaRegistry,
+                    addButtonText = stringResource(commonR.string.todo_widget_select_list),
+                )
+            }
 
             Row(
                 modifier = Modifier.clickable { onShowCompletedChanged(!showCompleted) },
             ) {
                 Text(
-                    text = stringResource(R.string.widget_todo_show_completed),
+                    text = stringResource(commonR.string.widget_todo_show_completed),
                     modifier = Modifier
                         .align(Alignment.CenterVertically)
                         .weight(1f),
@@ -258,7 +263,9 @@ private fun TodoWidgetConfigureView(
                 Switch(
                     checked = showCompleted,
                     onCheckedChange = { onShowCompletedChanged(it) },
-                    colors = SwitchDefaults.colors(uncheckedThumbColor = colorResource(R.color.colorSwitchUncheckedThumb)),
+                    colors = SwitchDefaults.colors(
+                        uncheckedThumbColor = colorResource(commonR.color.colorSwitchUncheckedThumb),
+                    ),
                 )
             }
 
@@ -270,10 +277,10 @@ private fun TodoWidgetConfigureView(
 
             if (selectedBackgroundType == WidgetBackgroundType.TRANSPARENT) {
                 ExposedDropdownMenu(
-                    label = stringResource(R.string.widget_text_color_title),
+                    label = stringResource(commonR.string.widget_text_color_title),
                     keys = listOf(
-                        stringResource(R.string.widget_text_color_black),
-                        stringResource(R.string.widget_text_color_white),
+                        stringResource(commonR.string.widget_text_color_black),
+                        stringResource(commonR.string.widget_text_color_white),
                     ),
                     currentIndex = textColorIndex,
                     onSelected = { onTextColorSelected(it) },
@@ -283,9 +290,9 @@ private fun TodoWidgetConfigureView(
 
             Button(
                 modifier = Modifier.fillMaxWidth(),
-                onClick = { onAddWidget() },
+                onClick = { onActionClick() },
             ) {
-                Text(stringResource(if (isUpdateWidget) R.string.update_widget else R.string.add_widget))
+                Text(stringResource(if (isUpdateWidget) commonR.string.update_widget else commonR.string.add_widget))
             }
         }
     }
@@ -315,7 +322,7 @@ private fun TodoWidgetConfigureViewPreview() {
             textColorIndex = 0,
             onTextColorSelected = {},
             isUpdateWidget = true,
-            onAddWidget = {},
+            onActionClick = {},
         )
     }
 }

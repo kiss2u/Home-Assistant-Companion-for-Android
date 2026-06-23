@@ -3,20 +3,30 @@ package io.homeassistant.companion.android.webview
 import android.content.Context
 import android.content.IntentSender
 import androidx.activity.result.ActivityResult
+import androidx.lifecycle.Lifecycle
+import io.homeassistant.companion.android.common.data.prefs.ScreenOrientation
+import io.homeassistant.companion.android.common.util.GestureAction
+import io.homeassistant.companion.android.common.util.GestureDirection
+import io.homeassistant.companion.android.database.server.ServerConnectionInfo
 import kotlinx.coroutines.flow.Flow
-import org.json.JSONObject
+import kotlinx.serialization.json.JsonObject
 
 interface WebViewPresenter {
 
-    fun onViewReady(path: String?)
+    suspend fun load(
+        lifecycle: Lifecycle,
+        path: String? = null,
+        isInternalOverride: ((ServerConnectionInfo) -> Boolean)? = null,
+        isNewServer: Boolean? = null,
+    )
 
     fun getActiveServer(): Int
-    fun getActiveServerName(): String?
-    fun updateActiveServer()
-    fun setActiveServer(id: Int)
-    fun switchActiveServer(id: Int)
-    fun nextServer()
-    fun previousServer()
+    suspend fun getActiveServerName(): String?
+    suspend fun updateActiveServer()
+    suspend fun setActiveServer(id: Int)
+    suspend fun switchActiveServer(lifecycle: Lifecycle, id: Int)
+    suspend fun nextServer(lifecycle: Lifecycle)
+    suspend fun previousServer(lifecycle: Lifecycle)
 
     fun onGetExternalAuth(context: Context, callback: String, force: Boolean)
 
@@ -24,46 +34,52 @@ interface WebViewPresenter {
 
     fun onRevokeExternalAuth(callback: String)
 
-    fun isFullScreen(): Boolean
+    suspend fun isFullScreen(): Boolean
 
-    fun getScreenOrientation(): String?
+    suspend fun getScreenOrientation(): ScreenOrientation
 
-    fun isKeepScreenOnEnabled(): Boolean
+    suspend fun isKeepScreenOnEnabled(): Boolean
 
-    fun getPageZoomLevel(): Int
-    fun isPinchToZoomEnabled(): Boolean
-    fun isWebViewDebugEnabled(): Boolean
+    suspend fun getPageZoomLevel(): Int
+    suspend fun isPinchToZoomEnabled(): Boolean
+    suspend fun isAppLocked(): Boolean
+    suspend fun setAppActive(active: Boolean)
 
-    fun isAppLocked(): Boolean
-    fun setAppActive(active: Boolean)
+    suspend fun isAutoPlayVideoEnabled(): Boolean
+    suspend fun isAlwaysShowFirstViewOnAppStartEnabled(): Boolean
 
-    fun isLockEnabled(): Boolean
-    fun isAutoPlayVideoEnabled(): Boolean
-    fun isAlwaysShowFirstViewOnAppStartEnabled(): Boolean
+    fun onExternalBusMessage(message: JsonObject)
 
-    fun sessionTimeOut(): Int
-
-    fun onExternalBusMessage(message: JSONObject)
+    suspend fun getGestureAction(direction: GestureDirection, pointerCount: Int): GestureAction
 
     fun onStart(context: Context)
 
     fun onFinish()
 
-    fun isSsidUsed(): Boolean
+    suspend fun isSsidUsed(): Boolean
 
-    fun getAuthorizationHeader(): String
+    /**
+     * Marks the security level screen as having been shown for the current server.
+     * Should be called when the user dismisses
+     * the [io.homeassistant.companion.android.settings.ConnectionSecurityLevelFragment].
+     */
+    fun onConnectionSecurityLevelShown()
+
+    suspend fun getAllowInsecureConnection(): Boolean?
+
+    suspend fun getAuthorizationHeader(): String
 
     suspend fun parseWebViewColor(webViewColor: String): Int
 
     fun appCanCommissionMatterDevice(): Boolean
-    fun startCommissioningMatterDevice(context: Context)
+    fun startCommissioningMatterDevice()
 
     /** @return `true` if the app can send this device's preferred Thread credential to the server */
     fun appCanExportThreadCredentials(): Boolean
-    fun exportThreadCredentials(context: Context)
+    fun exportThreadCredentials()
     fun getMatterThreadStepFlow(): Flow<MatterThreadStep>
     fun getMatterThreadIntent(): IntentSender?
-    fun onMatterThreadIntentResult(context: Context, result: ActivityResult)
+    fun onMatterThreadIntentResult(result: ActivityResult)
     fun finishMatterThreadFlow()
 
     /** @return `true` if the app should prompt the user for Improv permissions before scanning */
@@ -79,4 +95,7 @@ interface WebViewPresenter {
     /** @return `true` if the app tried starting scanning or `false` if it was missing permissions */
     fun startScanningForImprov(): Boolean
     fun stopScanningForImprov(force: Boolean)
+
+    suspend fun onNotificationPermissionResult(granted: Boolean)
+    suspend fun shouldAskNotificationPermission(): Boolean
 }

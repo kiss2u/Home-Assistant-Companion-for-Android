@@ -63,7 +63,8 @@
             android:name="com.google.android.wearable.standalone"
             android:value="false" />
 
-        <activity android:name=".home.HomeActivity" />
+        <activity android:name=".home.HomeActivity"
+            android:exported="true"/>
         <activity android:name=".splash.SplashActivity"
             android:theme="@style/Theme.HomeAssistant.SplashTheme"
             android:exported="true">
@@ -120,7 +121,8 @@
             android:label="@string/ha_assist"
             android:launchMode="singleTask"
             android:theme="@style/Theme.HomeAssistant.SplashThemeAssist"
-            android:exported="true">
+            android:exported="true"
+            android:taskAffinity="io.homeassistant.companion.android.assist">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -241,7 +243,7 @@
                 <action android:name="io.homeassistant.companion.android.TILE_ACTION" />
             </intent-filter>
         </receiver>
-        
+
         <!-- Complications -->
         <service android:name=".complications.EntityStateDataSourceService"
             android:exported="true"

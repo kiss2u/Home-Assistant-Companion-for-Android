@@ -22,6 +22,7 @@ import androidx.wear.compose.material3.SwitchButton
 import androidx.wear.compose.material3.Text
 import androidx.wear.tooling.preview.devices.WearDevices
 import io.homeassistant.companion.android.common.sensors.SensorManager
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.database.sensor.Sensor
 import io.homeassistant.companion.android.theme.getSwitchButtonColors
 import io.homeassistant.companion.android.util.batterySensorManager
@@ -43,23 +44,35 @@ fun SensorUi(
             perm = it
         }
 
+    val context = LocalContext.current
     val permissionLaunch = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { isGranted ->
         var allGranted = true
         isGranted.forEach {
             if (
-                it.key == Manifest.permission.ACCESS_FINE_LOCATION && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                manager.requiredPermissions(basicSensor.id).contains(Manifest.permission.ACCESS_FINE_LOCATION) &&
-                manager.requiredPermissions(basicSensor.id).contains(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                it.key == Manifest.permission.ACCESS_FINE_LOCATION &&
+                SdkVersion.isAtLeast(Build.VERSION_CODES.R) &&
+                manager.requiredPermissions(
+                    context,
+                    basicSensor.id,
+                ).contains(Manifest.permission.ACCESS_FINE_LOCATION) &&
+                manager.requiredPermissions(
+                    context,
+                    basicSensor.id,
+                ).contains(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
             ) {
                 backgroundRequest.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                 return@forEach
             }
             if (
-                it.key == Manifest.permission.BODY_SENSORS && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                manager.requiredPermissions(basicSensor.id).contains(Manifest.permission.BODY_SENSORS) &&
-                manager.requiredPermissions(basicSensor.id).contains(Manifest.permission.BODY_SENSORS_BACKGROUND)
+                it.key == Manifest.permission.BODY_SENSORS &&
+                SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU) &&
+                manager.requiredPermissions(context, basicSensor.id).contains(Manifest.permission.BODY_SENSORS) &&
+                manager.requiredPermissions(
+                    context,
+                    basicSensor.id,
+                ).contains(Manifest.permission.BODY_SENSORS_BACKGROUND)
             ) {
                 backgroundRequest.launch(Manifest.permission.BODY_SENSORS_BACKGROUND)
                 return@forEach
@@ -72,14 +85,13 @@ fun SensorUi(
         perm = allGranted
     }
 
-    val context = LocalContext.current
     LaunchedEffect(Unit) { perm = manager.checkPermission(context, basicSensor.id) }
     val isChecked = (sensor == null && basicSensor.enabledByDefault) ||
         (sensor?.enabled == true && perm)
     SwitchButton(
         checked = isChecked,
         onCheckedChange = { enabled ->
-            val permissions = manager.requiredPermissions(basicSensor.id)
+            val permissions = manager.requiredPermissions(context, basicSensor.id)
             if (perm || !enabled) {
                 onSensorClicked(basicSensor.id, enabled)
             } else {
@@ -112,7 +124,15 @@ fun SensorUi(
         secondaryLabel = {
             if (sensor?.enabled == true) {
                 sensor.state.let {
-                    Text(if (basicSensor.unitOfMeasurement.isNullOrBlank() || sensor.state.toDoubleOrNull() == null) it else "$it ${sensor.unitOfMeasurement}")
+                    Text(
+                        if (basicSensor.unitOfMeasurement.isNullOrBlank() ||
+                            sensor.state.toDoubleOrNull() == null
+                        ) {
+                            it
+                        } else {
+                            "$it ${sensor.unitOfMeasurement}"
+                        },
+                    )
                 }
             }
         },

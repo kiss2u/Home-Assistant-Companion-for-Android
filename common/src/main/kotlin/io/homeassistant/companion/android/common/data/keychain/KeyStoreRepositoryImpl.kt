@@ -1,6 +1,7 @@
 package io.homeassistant.companion.android.common.data.keychain
 
 import android.content.Context
+import android.os.Build
 import java.security.KeyStore
 import java.security.KeyStore.PrivateKeyEntry
 import java.security.PrivateKey
@@ -10,10 +11,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 
-class KeyStoreRepositoryImpl @Inject constructor() : KeyChainRepository {
-    companion object {
-        const val ALIAS = "TLSClientCertificate"
-    }
+object KeyStoreRepository {
+    const val ALIAS = "TLSClientCertificate"
+}
+
+internal class KeyStoreRepositoryImpl @Inject constructor() : KeyChainRepository {
 
     private var alias: String? = null
     private var key: PrivateKey? = null
@@ -32,17 +34,18 @@ class KeyStoreRepositoryImpl @Inject constructor() : KeyChainRepository {
         throw IllegalArgumentException("Key alias cannot be null.")
     }
 
-    override suspend fun setData(alias: String, privateKey: PrivateKey, certificateChain: Array<X509Certificate>) = withContext(Dispatchers.IO) {
-        // clear state
-        this@KeyStoreRepositoryImpl.alias = null
-        this@KeyStoreRepositoryImpl.key = null
-        this@KeyStoreRepositoryImpl.chain = null
+    override suspend fun setData(alias: String, privateKey: PrivateKey, certificateChain: Array<X509Certificate>) =
+        withContext(Dispatchers.IO) {
+            // clear state
+            this@KeyStoreRepositoryImpl.alias = null
+            this@KeyStoreRepositoryImpl.key = null
+            this@KeyStoreRepositoryImpl.chain = null
 
-        // store and load certificate to/from KeyStore
-        doStore(alias, privateKey, certificateChain)
-        this@KeyStoreRepositoryImpl.alias = alias
-        doLoad()
-    }
+            // store and load certificate to/from KeyStore
+            doStore(alias, privateKey, certificateChain)
+            this@KeyStoreRepositoryImpl.alias = alias
+            doLoad()
+        }
 
     override fun getAlias(): String? {
         return alias
@@ -59,7 +62,7 @@ class KeyStoreRepositoryImpl @Inject constructor() : KeyChainRepository {
     @Synchronized
     private fun doLoad() {
         if (alias != null && alias?.isNotEmpty() == true) {
-            val aks = KeyStore.getInstance("AndroidKeyStore").apply {
+            val aks = keyStore().apply {
                 load(null)
                 if (!containsAlias(alias)) return
             }
@@ -94,12 +97,18 @@ class KeyStoreRepositoryImpl @Inject constructor() : KeyChainRepository {
     @Synchronized
     private fun doStore(alias: String, key: PrivateKey, chain: Array<X509Certificate>) {
         try {
-            KeyStore.getInstance("AndroidKeyStore").apply {
+            keyStore().apply {
                 load(null)
                 setEntry(alias, PrivateKeyEntry(key, chain), null)
             }
         } catch (e: Exception) {
             Timber.e(e, "Exception storing KeyStore.Entry")
         }
+    }
+
+    private fun keyStore(): KeyStore = if ("robolectric" == Build.FINGERPRINT) {
+        KeyStore.getInstance(KeyStore.getDefaultType())
+    } else {
+        KeyStore.getInstance("AndroidKeyStore")
     }
 }

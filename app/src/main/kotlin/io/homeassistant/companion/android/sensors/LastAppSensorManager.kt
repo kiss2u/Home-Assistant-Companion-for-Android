@@ -5,11 +5,12 @@ import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.sensors.SensorManager
 import io.homeassistant.companion.android.common.util.STATE_UNKNOWN
+import io.homeassistant.companion.android.common.util.SdkVersion
+import io.homeassistant.companion.android.common.util.isAutomotive
 import timber.log.Timber
 
 class LastAppSensorManager : SensorManager {
@@ -34,26 +35,17 @@ class LastAppSensorManager : SensorManager {
     }
 
     override fun hasSensor(context: Context): Boolean {
-        return if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)) {
-            false
-        } else {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-        }
+        return !context.isAutomotive()
     }
 
-    @RequiresApi(Build.VERSION_CODES.M)
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return arrayOf(Manifest.permission.PACKAGE_USAGE_STATS)
     }
 
-    @RequiresApi(Build.VERSION_CODES.LOLLIPOP_MR1)
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         updateLastApp(context)
     }
 
-    @RequiresApi(Build.VERSION_CODES.LOLLIPOP_MR1)
     private suspend fun updateLastApp(context: Context) {
         if (!isEnabled(context, last_used)) {
             return
@@ -61,14 +53,21 @@ class LastAppSensorManager : SensorManager {
 
         val usageStats = context.getSystemService<UsageStatsManager>()!!
         val current = System.currentTimeMillis()
-        val lastApp = usageStats.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, current - 1000 * 1000, current).maxByOrNull { it.lastTimeUsed }?.packageName ?: "none"
+        val lastApp =
+            usageStats.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, current - 1000 * 1000, current).maxByOrNull {
+                it.lastTimeUsed
+            }?.packageName
+                ?: "none"
 
         var appLabel = STATE_UNKNOWN
 
         try {
             val pm = context.packageManager
-            val appInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                pm.getApplicationInfo(lastApp, PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong()))
+            val appInfo = if (SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU)) {
+                pm.getApplicationInfo(
+                    lastApp,
+                    PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong()),
+                )
             } else {
                 @Suppress("DEPRECATION")
                 pm.getApplicationInfo(lastApp, PackageManager.GET_META_DATA)

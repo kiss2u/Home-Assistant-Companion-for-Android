@@ -17,10 +17,17 @@ import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.sensors.SensorManager
 import io.homeassistant.companion.android.common.util.STATE_UNKNOWN
+import io.homeassistant.companion.android.common.util.SdkVersion
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
-class HeartRateSensorManager : SensorManager, SensorEventListener {
+class HeartRateSensorManager :
+    SensorManager,
+    SensorEventListener {
     companion object {
         private var isListenerRegistered = false
         private var listenerLastRegistered = 0
@@ -40,6 +47,8 @@ class HeartRateSensorManager : SensorManager, SensorEventListener {
         )
     }
 
+    private val ioScope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job())
+
     override fun docsLink(): String {
         return "https://companion.home-assistant.io/docs/wear-os/sensors"
     }
@@ -51,8 +60,8 @@ class HeartRateSensorManager : SensorManager, SensorEventListener {
         return listOf(heartRate)
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
+        return if (SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU)) {
             arrayOf(Manifest.permission.BODY_SENSORS, Manifest.permission.BODY_SENSORS_BACKGROUND)
         } else {
             arrayOf(Manifest.permission.BODY_SENSORS)
@@ -67,9 +76,7 @@ class HeartRateSensorManager : SensorManager, SensorEventListener {
     private lateinit var latestContext: Context
     private lateinit var mySensorManager: android.hardware.SensorManager
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         latestContext = context
         updateHeartRate()
     }
@@ -106,23 +113,30 @@ class HeartRateSensorManager : SensorManager, SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent?) {
         eventCount++
-        val validReading = event?.sensor?.type == Sensor.TYPE_HEART_RATE && event.accuracy !in skipAccuracy &&
+        val validReading = event?.sensor?.type == Sensor.TYPE_HEART_RATE &&
+            event.accuracy !in skipAccuracy &&
             event.values[0].roundToInt() >= 0
         if (event?.sensor?.type == Sensor.TYPE_HEART_RATE) {
-            Timber.d("HR event received with accuracy: ${getAccuracy(event.accuracy)} and value: ${event.values[0]} with event count: $eventCount")
+            Timber.d(
+                "HR event received with accuracy: ${getAccuracy(
+                    event.accuracy,
+                )} and value: ${event.values[0]} with event count: $eventCount",
+            )
         } else {
             Timber.d("No HR event received")
         }
         if (event != null && validReading) {
-            onSensorUpdated(
-                latestContext,
-                heartRate,
-                event.values[0].roundToInt().toString(),
-                heartRate.statelessIcon,
-                mapOf(
-                    "accuracy" to getAccuracy(event.accuracy),
-                ),
-            )
+            ioScope.launch {
+                onSensorUpdated(
+                    latestContext,
+                    heartRate,
+                    event.values[0].roundToInt().toString(),
+                    heartRate.statelessIcon,
+                    mapOf(
+                        "accuracy" to getAccuracy(event.accuracy),
+                    ),
+                )
+            }
         }
         if (validReading || eventCount >= 10) {
             mySensorManager.unregisterListener(this)

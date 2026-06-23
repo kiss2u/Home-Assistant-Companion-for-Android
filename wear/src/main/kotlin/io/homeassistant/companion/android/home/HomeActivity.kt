@@ -14,20 +14,28 @@ import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.wear.protolayout.ActionBuilders
 import dagger.hilt.android.AndroidEntryPoint
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.home.views.DEEPLINK_PREFIX_SET_CAMERA_TILE
 import io.homeassistant.companion.android.home.views.DEEPLINK_PREFIX_SET_SHORTCUT_TILE
 import io.homeassistant.companion.android.home.views.DEEPLINK_PREFIX_SET_TEMPLATE_TILE
+import io.homeassistant.companion.android.home.views.DEEPLINK_PREFIX_SET_THERMOSTAT_TILE
 import io.homeassistant.companion.android.home.views.LoadHomePage
 import io.homeassistant.companion.android.onboarding.OnboardingActivity
 import io.homeassistant.companion.android.sensors.SensorReceiver
 import io.homeassistant.companion.android.sensors.SensorWorker
+import io.homeassistant.companion.android.tiles.OpenTileSettingsActivity
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import timber.log.Timber
 
 @AndroidEntryPoint
-class HomeActivity : ComponentActivity(), HomeView {
+class HomeActivity :
+    ComponentActivity(),
+    HomeView {
 
     @Inject
     lateinit var presenter: HomePresenter
@@ -42,6 +50,7 @@ class HomeActivity : ComponentActivity(), HomeView {
 
     companion object {
         private const val EXTRA_FROM_ONBOARDING = "from_onboarding"
+        private const val LAUNCH_MODE = "launch_mode"
 
         fun newInstance(context: Context, fromOnboarding: Boolean = false): Intent {
             return Intent(context, HomeActivity::class.java).apply {
@@ -49,30 +58,62 @@ class HomeActivity : ComponentActivity(), HomeView {
             }
         }
 
-        fun getCameraTileSettingsIntent(
-            context: Context,
-            tileId: Int,
-        ) = Intent(
+        sealed interface LaunchMode {
+            object ThermostatTile : LaunchMode
+            object CameraTile : LaunchMode
+        }
+
+        fun getLaunchAction(packageName: String, tileId: Int, launchMode: LaunchMode): ActionBuilders.LaunchAction {
+            val androidActivity = ActionBuilders.AndroidActivity.Builder()
+                .setPackageName(packageName)
+                .setClassName(
+                    HomeActivity::class.java.name,
+                )
+                .addKeyToExtraMapping(
+                    LAUNCH_MODE,
+                    ActionBuilders.AndroidStringExtra.Builder().setValue(
+                        when (launchMode) {
+                            LaunchMode.ThermostatTile -> OpenTileSettingsActivity.CONFIG_THERMOSTAT_TILE
+                            LaunchMode.CameraTile -> OpenTileSettingsActivity.CONFIG_CAMERA_TILE
+                        },
+                    )
+                        .build(),
+                )
+                .addKeyToExtraMapping(
+                    OpenTileSettingsActivity.TILE_ID_KEY,
+                    ActionBuilders.AndroidIntExtra.Builder().setValue(tileId).build(),
+                )
+                .build()
+
+            val launchAction = ActionBuilders.LaunchAction.Builder()
+                .setAndroidActivity(androidActivity)
+                .build()
+
+            return launchAction
+        }
+
+        fun getCameraTileSettingsIntent(context: Context, tileId: Int) = Intent(
             Intent.ACTION_VIEW,
             "$DEEPLINK_PREFIX_SET_CAMERA_TILE/$tileId".toUri(),
             context,
             HomeActivity::class.java,
         )
 
-        fun getShortcutsTileSettingsIntent(
-            context: Context,
-            tileId: Int,
-        ) = Intent(
+        fun getThermostatTileSettingsIntent(context: Context, tileId: Int) = Intent(
+            Intent.ACTION_VIEW,
+            "$DEEPLINK_PREFIX_SET_THERMOSTAT_TILE/$tileId".toUri(),
+            context,
+            HomeActivity::class.java,
+        )
+
+        fun getShortcutsTileSettingsIntent(context: Context, tileId: Int) = Intent(
             Intent.ACTION_VIEW,
             "$DEEPLINK_PREFIX_SET_SHORTCUT_TILE/$tileId".toUri(),
             context,
             HomeActivity::class.java,
         )
 
-        fun getTemplateTileSettingsIntent(
-            context: Context,
-            tileId: Int,
-        ) = Intent(
+        fun getTemplateTileSettingsIntent(context: Context, tileId: Int) = Intent(
             Intent.ACTION_VIEW,
             "$DEEPLINK_PREFIX_SET_TEMPLATE_TILE/$tileId".toUri(),
             context,
@@ -84,6 +125,20 @@ class HomeActivity : ComponentActivity(), HomeView {
         super.onCreate(savedInstanceState)
         // Get rid of me!
         presenter.init(this)
+        val launchMode = intent.getStringExtra(LAUNCH_MODE)
+        if (launchMode == OpenTileSettingsActivity.CONFIG_THERMOSTAT_TILE ||
+            launchMode == OpenTileSettingsActivity.CONFIG_CAMERA_TILE
+        ) {
+            startActivity(
+                OpenTileSettingsActivity.newInstance(
+                    this@HomeActivity,
+                    launchMode,
+                    intent.getIntExtra(OpenTileSettingsActivity.TILE_ID_KEY, 0),
+                ),
+            )
+            finish()
+            return
+        }
 
         presenter.onViewReady()
         setContent {
@@ -101,7 +156,7 @@ class HomeActivity : ComponentActivity(), HomeView {
                     }
                 }
                 launch { mainViewModel.entityRegistryUpdates() }
-                if (!mainViewModel.isFavoritesOnly) {
+                if (!mainViewModel.mainViewUiState.value.isFavoritesOnly) {
                     launch { mainViewModel.areaUpdates() }
                     launch { mainViewModel.deviceUpdates() }
                 }
@@ -116,13 +171,19 @@ class HomeActivity : ComponentActivity(), HomeView {
         mainViewModel.initAllSensors()
 
         lifecycleScope.launch {
-            if (mainViewModel.loadingState.value == MainViewModel.LoadingState.READY) {
-                mainViewModel.updateUI()
+            if (mainViewModel.mainViewUiState.value.loadingState == MainViewModel.LoadingState.READY) {
+                try {
+                    mainViewModel.updateUI()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to update UI")
+                }
             }
         }
         if (
             intent.getBooleanExtra(EXTRA_FROM_ONBOARDING, false) &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            SdkVersion.isAtLeast(Build.VERSION_CODES.TIRAMISU) &&
             !NotificationManagerCompat.from(this@HomeActivity).areNotificationsEnabled()
         ) {
             permissionRequest.launch(Manifest.permission.POST_NOTIFICATIONS)

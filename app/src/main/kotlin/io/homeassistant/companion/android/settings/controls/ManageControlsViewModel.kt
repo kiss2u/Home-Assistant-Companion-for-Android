@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -15,15 +16,18 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.homeassistant.companion.android.common.data.integration.ControlsAuthRequiredSetting
 import io.homeassistant.companion.android.common.data.integration.Entity
-import io.homeassistant.companion.android.common.data.integration.domain
 import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.controls.HaControlsPanelActivity
 import io.homeassistant.companion.android.controls.HaControlsProviderService
+import io.homeassistant.companion.android.database.server.Server
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
+import timber.log.Timber
 
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @HiltViewModel
@@ -52,9 +56,15 @@ class ManageControlsViewModel @Inject constructor(
     var structureEnabled by mutableStateOf(false)
         private set
 
+    var servers by mutableStateOf<List<Server>>(emptyList())
+        private set
+
+    var defaultServerId by mutableIntStateOf(0)
+
     init {
         viewModelScope.launch {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            servers = serverManager.servers()
+            if (SdkVersion.isAtLeast(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)) {
                 panelEnabled =
                     application.packageManager.getComponentEnabledSetting(
                         ComponentName(application, HaControlsPanelActivity::class.java),
@@ -74,15 +84,24 @@ class ManageControlsViewModel @Inject constructor(
 
             structureEnabled = prefsRepository.getControlsEnableStructure()
 
-            serverManager.defaultServers.map { server ->
+            defaultServerId = serverManager.getServer()?.id ?: 0
+
+            servers.map { server ->
                 async {
-                    val entities = serverManager.integrationRepository(server.id).getEntities()
-                        ?.filter { it.domain in HaControlsProviderService.getSupportedDomains() }
-                        ?.sortedWith(
-                            compareBy(String.CASE_INSENSITIVE_ORDER) {
-                                (it.attributes as Map<String, Any>)["friendly_name"].toString()
-                            },
-                        )
+                    val entities = try {
+                        serverManager.integrationRepository(server.id).getEntities()
+                            ?.filter { it.domain in HaControlsProviderService.getSupportedDomains() }
+                            ?.sortedWith(
+                                compareBy(String.CASE_INSENSITIVE_ORDER) {
+                                    it.attributes["friendly_name"].toString()
+                                },
+                            )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.e(e, "Failed to get entities")
+                        null
+                    }
                     if (entities != null) {
                         entitiesList[server.id] = entities
                     }
@@ -149,7 +168,7 @@ class ManageControlsViewModel @Inject constructor(
     }
 
     fun enablePanelForControls(enabled: Boolean) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        if (!SdkVersion.isAtLeast(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)) return
 
         application.packageManager.setComponentEnabledSetting(
             ComponentName(application, HaControlsPanelActivity::class.java),
@@ -162,7 +181,9 @@ class ManageControlsViewModel @Inject constructor(
         )
         panelEnabled = enabled
         if (panelSetting?.second == null) {
-            serverManager.getServer()?.id?.let { setPanelConfig("", it) }
+            viewModelScope.launch {
+                serverManager.getServer()?.id?.let { setPanelConfig("", it) }
+            }
         }
     }
 

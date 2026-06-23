@@ -6,22 +6,26 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.IntentCompat
 import androidx.wear.activity.ConfirmationActivity
 import dagger.hilt.android.AndroidEntryPoint
 import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.database.server.TemporaryServer
 import io.homeassistant.companion.android.databinding.ActivityIntegrationBinding
 import io.homeassistant.companion.android.home.HomeActivity
 import io.homeassistant.companion.android.util.adjustInset
 import javax.inject.Inject
 
 @AndroidEntryPoint
-class MobileAppIntegrationActivity : AppCompatActivity(), MobileAppIntegrationView {
+class MobileAppIntegrationActivity :
+    AppCompatActivity(),
+    MobileAppIntegrationView {
     companion object {
-        const val EXTRA_SERVER = "server"
+        private const val EXTRA_TEMP_SERVER = "temp_server"
 
-        fun newInstance(context: Context, serverId: Int): Intent {
+        fun newInstance(context: Context, temporaryServer: TemporaryServer): Intent {
             return Intent(context, MobileAppIntegrationActivity::class.java).apply {
-                putExtra(EXTRA_SERVER, serverId)
+                putExtra(EXTRA_TEMP_SERVER, temporaryServer)
             }
         }
     }
@@ -33,8 +37,12 @@ class MobileAppIntegrationActivity : AppCompatActivity(), MobileAppIntegrationVi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val serverId = intent.getIntExtra(EXTRA_SERVER, 0)
-        if (serverId == 0) finish()
+        val temporaryServer =
+            IntentCompat.getParcelableExtra<TemporaryServer>(intent, EXTRA_TEMP_SERVER, TemporaryServer::class.java)
+        if (temporaryServer == null) {
+            finish()
+            return
+        }
 
         binding = ActivityIntegrationBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -42,7 +50,7 @@ class MobileAppIntegrationActivity : AppCompatActivity(), MobileAppIntegrationVi
         binding.deviceName.setText(Build.MODEL)
 
         binding.finish.setOnClickListener {
-            presenter.onRegistrationAttempt(serverId, binding.deviceName.text.toString())
+            presenter.onRegistrationAttempt(temporaryServer, binding.deviceName.text.toString())
         }
 
         adjustInset(applicationContext, binding, null)

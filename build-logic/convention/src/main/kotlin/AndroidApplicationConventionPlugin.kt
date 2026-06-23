@@ -32,11 +32,12 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
     override fun apply(target: Project) {
         with(target) {
             apply(plugin = libs.plugins.android.application.getPluginId())
-            apply(plugin = libs.plugins.kotlin.android.getPluginId())
             apply(plugin = libs.plugins.ksp.getPluginId())
             apply(plugin = libs.plugins.hilt.getPluginId())
-            apply(plugin = libs.plugins.compose.compiler.getPluginId())
+            apply(plugin = libs.plugins.aboutlibraries.getPluginId())
+            apply(plugin = libs.plugins.google.services.getPluginId())
             AndroidCommonConventionPlugin().apply(target)
+            AndroidComposeConventionPlugin().apply(target)
 
             extensions.configure<ApplicationExtension> {
                 namespace = APPLICATION_ID
@@ -47,11 +48,13 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
 
                     versionName = getVersionName()
                     versionCode = getVersionCode()
+                    val noStrictMode = project.findProperty("noStrictMode")?.toString()?.ifEmpty { "true" }
+                        ?.toBoolean() ?: false
+                    buildConfigField("Boolean", "NO_STRICT_MODE", noStrictMode.toString())
                 }
 
                 buildFeatures {
                     viewBinding = true
-                    compose = true
                 }
 
                 val NESTOR_KEYSTORE_PASSWORD = System.getenv("NESTOR_KEYSTORE_PASSWORD")

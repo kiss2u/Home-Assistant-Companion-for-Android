@@ -1,33 +1,40 @@
 package io.homeassistant.companion.android.sensors
 
 import android.content.Context
+import dagger.hilt.android.EntryPointAccessors
 import io.homeassistant.companion.android.common.sensors.SensorManager
-import io.homeassistant.companion.android.database.AppDatabase
 import io.homeassistant.companion.android.database.sensor.Attribute
 import io.homeassistant.companion.android.database.sensor.Sensor
 import io.homeassistant.companion.android.database.sensor.SensorDao
+import io.mockk.coEvery
+import io.mockk.coJustRun
 import io.mockk.every
-import io.mockk.justRun
 import io.mockk.mockk
-import io.mockk.mockkObject
+import io.mockk.mockkStatic
 import io.mockk.slot
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
 class SensorManagerTest {
 
     @Test
-    fun `Given attributes when invoking onSensorUpdated then attributes are replaced in DAO properly formatted in json`() {
+    fun `Given attributes when invoking onSensorUpdated then attributes are replaced in DAO properly formatted in json`() = runTest {
         val context: Context = mockk()
         val sensorManager = FakeSensorManager()
-        val appDatabase: AppDatabase = mockk()
         val sensorDao = mockk<SensorDao>()
+        val entryPoint = mockk<SensorManager.SensorManagerEntryPoint>()
 
-        mockkObject(AppDatabase.Companion)
-
-        every { AppDatabase.getInstance(context) } returns appDatabase
-        every { appDatabase.sensorDao() } returns sensorDao
-        every { sensorDao.get("test") } returns listOf(
+        mockkStatic(EntryPointAccessors::class)
+        every { context.applicationContext } returns context
+        every {
+            EntryPointAccessors.fromApplication(
+                context,
+                SensorManager.SensorManagerEntryPoint::class.java,
+            )
+        } returns entryPoint
+        every { entryPoint.sensorDao() } returns sensorDao
+        coEvery { sensorDao.get("test") } returns listOf(
             Sensor(
                 id = "test",
                 serverId = 0,
@@ -35,9 +42,9 @@ class SensorManagerTest {
                 state = "test",
             ),
         )
-        justRun { sensorDao.update(any()) }
+        coJustRun { sensorDao.update(any()) }
         val slot = slot<List<Attribute>>()
-        justRun { sensorDao.replaceAllAttributes(any(), capture(slot)) }
+        coJustRun { sensorDao.replaceAllAttributes(any(), capture(slot)) }
 
         sensorManager.onSensorUpdated(
             context,
@@ -73,7 +80,7 @@ class SensorManagerTest {
 private class FakeSensorManager : SensorManager {
     override val name: Int = -1
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         TODO("Not needed")
     }
 

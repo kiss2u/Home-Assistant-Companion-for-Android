@@ -181,13 +181,11 @@ private fun EmptyContent() {
 private fun ListContent(todoItems: List<TodoItemState>, displayComplete: Boolean) {
     LazyColumn {
         if (todoItems.any { !it.done }) {
-            item { HeaderItem(glanceStringResource(commonR.string.widget_todo_active)) }
             todoItems.filter { !it.done }.forEach {
                 item { TodoItem(it) }
             }
         }
         if (displayComplete && todoItems.any { it.done }) {
-            item { HeaderItem(glanceStringResource(commonR.string.widget_todo_completed)) }
             todoItems.filter { it.done }.forEach {
                 item { TodoItem(it) }
             }
@@ -209,9 +207,17 @@ private fun TitleBar(listName: String?, serverId: Int, listEntityId: String, out
             modifier = GlanceModifier.padding(end = 4.dp).defaultWeight(),
         )
         CircleIconButton(
-            modifier = GlanceModifier.size(HomeAssistantGlanceTheme.dimensions.iconSize).semantics { testTag = "Refresh" },
+            modifier = GlanceModifier.size(HomeAssistantGlanceTheme.dimensions.iconSize).semantics {
+                testTag = "Refresh"
+            },
             contentColor = GlanceTheme.colors.primary,
-            imageProvider = if (outOfSync) ImageProvider(R.drawable.ic_sync_problem) else ImageProvider(R.drawable.ic_refresh),
+            imageProvider = if (outOfSync) {
+                ImageProvider(
+                    R.drawable.ic_sync_problem,
+                )
+            } else {
+                ImageProvider(R.drawable.ic_refresh)
+            },
             contentDescription = LocalContext.current.getString(commonR.string.widget_todo_refresh),
             backgroundColor = GlanceTheme.colors.widgetBackground,
             onClick = actionRefreshTodo(),
@@ -241,11 +247,6 @@ private fun TodoItem(todoItem: TodoItemState) {
     )
 }
 
-@Composable
-private fun HeaderItem(name: String) {
-    Text(text = name, style = HomeAssistantGlanceTypography.bodyLarge, modifier = GlanceModifier.padding(horizontal = 16.dp, vertical = 8.dp))
-}
-
 @OptIn(ExperimentalGlancePreviewApi::class)
 @Preview(250, 320)
 @Composable
@@ -258,7 +259,11 @@ private fun ScreenPreview() {
                 serverId = 1,
                 listEntityId = "",
                 listName = "Shopping List",
-                todoItems = listOf(TodoItemState(null, "Eggs", true), TodoItemState(null, "Milk", false), TodoItemState(null, "Bread", false)),
+                todoItems = listOf(
+                    TodoItemState(null, "Eggs", true),
+                    TodoItemState(null, "Milk", false),
+                    TodoItemState(null, "Bread", false),
+                ),
                 outOfSync = false,
                 showComplete = true,
             ),

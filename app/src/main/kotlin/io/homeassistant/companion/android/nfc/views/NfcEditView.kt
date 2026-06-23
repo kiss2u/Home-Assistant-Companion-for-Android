@@ -38,9 +38,11 @@ fun NfcEditView(
     showDeviceSample: Boolean,
     onDuplicateClicked: () -> Unit,
     onFireEventClicked: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     LazyColumn(
+        modifier = modifier,
         contentPadding = PaddingValues(all = 16.dp) + safeBottomPaddingValues(),
     ) {
         item {
@@ -101,13 +103,11 @@ fun NfcEditView(
 }
 
 @Composable
-fun NfcCodeContainer(
-    text: String,
-) {
+fun NfcCodeContainer(text: String, modifier: Modifier = Modifier) {
     Surface(
         shape = MaterialTheme.shapes.medium,
         color = colorResource(commonR.color.colorCodeBackground),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
     ) {
         SelectionContainer {
             Text(
@@ -120,11 +120,7 @@ fun NfcCodeContainer(
 }
 
 @Composable
-fun NfcTriggerExample(
-    modifier: Modifier = Modifier,
-    description: String,
-    example: String,
-) {
+fun NfcTriggerExample(description: String, example: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     Column(modifier = modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -156,6 +152,6 @@ fun NfcTriggerExample(
 
 @Preview(showSystemUi = true)
 @Composable
-fun NfcEditViewPreview() {
+private fun NfcEditViewPreview() {
     NfcEditView(identifier = "identifier", showDeviceSample = true, onDuplicateClicked = {}, onFireEventClicked = {})
 }

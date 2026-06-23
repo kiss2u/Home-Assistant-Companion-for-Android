@@ -9,6 +9,7 @@ import timber.log.Timber
 
 private const val REDIRECT_URL_PATH = "/redirect/"
 private const val INVITE_URL_PATH = "/invite/"
+private const val NAVIGATE_URL_PATH = "/navigate/"
 
 private const val MY_BASE_DOMAIN = "my.home-assistant.io"
 private const val BASE_MY_REDIRECT_URL = "https://$MY_BASE_DOMAIN$REDIRECT_URL_PATH"
@@ -31,14 +32,16 @@ sealed interface LinkDestination {
     data class Onboarding(val serverUrl: String) : LinkDestination
 
     /**
-     * Open a WebView with the given [url].
+     * Open a WebView with the given [path] and an optional [serverId].
      */
-    data class Webview(val path: String) : LinkDestination
+    data class Webview(val path: String, val serverId: Int) : LinkDestination
+
+    data class ServerPicker(val path: String) : LinkDestination
 
     /**
      * Nowhere to go from this link.
      */
-    object NoDestination : LinkDestination
+    data object NoDestination : LinkDestination
 }
 
 /**
@@ -53,12 +56,12 @@ interface LinkHandler {
      * @return A [LinkDestination] indicating where the link should navigate to,
      *         or [LinkDestination.NoDestination] if the link is unhandled or invalid.
      */
-    fun handleLink(uri: Uri): LinkDestination
+    suspend fun handleLink(uri: Uri): LinkDestination
 }
 
 class LinkHandlerImpl @Inject constructor(private val serverManager: ServerManager) : LinkHandler {
 
-    override fun handleLink(uri: Uri): LinkDestination {
+    override suspend fun handleLink(uri: Uri): LinkDestination {
         return when (uri.scheme) {
             "https" -> handleUniversalLink(uri)
             DEEP_LINK_SCHEME -> handleDeepLink(uri)
@@ -71,7 +74,15 @@ class LinkHandlerImpl @Inject constructor(private val serverManager: ServerManag
         }
     }
 
-    private fun handleUniversalLink(uri: Uri): LinkDestination {
+    private suspend fun webviewDestination(path: String, serverId: Int? = null): LinkDestination {
+        return if (serverId != null || serverManager.servers().size <= 1) {
+            LinkDestination.Webview(path, serverId ?: ServerManager.SERVER_ID_ACTIVE)
+        } else {
+            LinkDestination.ServerPicker(path)
+        }
+    }
+
+    private suspend fun handleUniversalLink(uri: Uri): LinkDestination {
         val path = uri.path.orEmpty()
 
         if (uri.host != MY_BASE_DOMAIN) {
@@ -81,7 +92,7 @@ class LinkHandlerImpl @Inject constructor(private val serverManager: ServerManag
             return LinkDestination.NoDestination
         }
         return when {
-            path.startsWith(REDIRECT_URL_PATH) -> handleNavigateLink(uri)
+            path.startsWith(REDIRECT_URL_PATH) -> handleRedirectLink(uri)
             path.startsWith(INVITE_URL_PATH) -> handleInviteLink(uri)
             else -> {
                 FailFast.fail { "Unknown or invalid universal link: $uri" }
@@ -90,9 +101,10 @@ class LinkHandlerImpl @Inject constructor(private val serverManager: ServerManag
         }
     }
 
-    private fun handleDeepLink(uri: Uri): LinkDestination {
+    private suspend fun handleDeepLink(uri: Uri): LinkDestination {
         return when {
             uri.host == INVITE_URL_PATH.removeSurrounding("/") -> handleInviteLink(uri)
+            uri.host == NAVIGATE_URL_PATH.removeSurrounding("/") -> handleNavigateLink(uri)
             else -> {
                 FailFast.fail { "Unknown or invalid deep link scheme: $uri" }
                 LinkDestination.NoDestination
@@ -130,9 +142,18 @@ class LinkHandlerImpl @Inject constructor(private val serverManager: ServerManag
         }
     }
 
-    private fun handleNavigateLink(uri: Uri): LinkDestination {
-        if (!serverManager.isRegistered()) {
-            Timber.w("No server registered, cannot handle deep link")
+    /**
+     * Handles redirect links from `https://my.home-assistant.io/redirect/...`.
+     *
+     * Transforms the universal link into an internal path format and adds the mobile parameter.
+     * Requires a registered server to proceed.
+     *
+     * @param uri The redirect URI to process.
+     * @return [LinkDestination.Webview] with the transformed path, [LinkDestination.ServerPicker] if multiple servers are registered,
+     *         or [LinkDestination.NoDestination] if no server is registered or if the mobile flag is already set.
+     */
+    private suspend fun handleRedirectLink(uri: Uri): LinkDestination {
+        if (!requireServerRegistered()) {
             return LinkDestination.NoDestination
         }
 
@@ -151,6 +172,42 @@ class LinkHandlerImpl @Inject constructor(private val serverManager: ServerManag
             .build().toString()
             .replaceFirst(BASE_MY_REDIRECT_URL, INTERNAL_MY_REDIRECT_PREFIX)
 
-        return LinkDestination.Webview(path)
+        return webviewDestination(path)
+    }
+
+    /**
+     * Handles navigate deep links from `homeassistant://navigate/...`.
+     *
+     * Supports server selection via the `server` query parameter:
+     * - No parameter or `server=default`: Uses the default server
+     * - `server=<name>`: Searches for a server with matching friendly name (case-insensitive)
+     *
+     * @param uri The navigate URI to process.
+     * @return [LinkDestination.Webview] with the full URI and resolved serverId, or [LinkDestination.NoDestination]
+     *         if no server is registered.
+     */
+    private suspend fun handleNavigateLink(uri: Uri): LinkDestination {
+        if (!requireServerRegistered()) {
+            return LinkDestination.NoDestination
+        }
+
+        val serverName = uri.getQueryParameter("server").takeIf { !it.isNullOrBlank() }
+        val serverId = when (serverName) {
+            "default", null -> serverManager.getServer()?.id
+            else -> serverManager.servers().find {
+                it.friendlyName.equals(serverName, ignoreCase = true)
+            }?.id
+        }
+
+        val path = uri.toString()
+        return webviewDestination(path, serverId)
+    }
+
+    private suspend fun requireServerRegistered(): Boolean {
+        return serverManager.isRegistered().also { registered ->
+            if (!registered) {
+                Timber.w("No server registered, cannot handle deep link")
+            }
+        }
     }
 }

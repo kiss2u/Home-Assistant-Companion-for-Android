@@ -7,28 +7,36 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewModelScope
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedFactory
+import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.common.assist.AssistAudioStrategy
 import io.homeassistant.companion.android.common.assist.AssistEvent
 import io.homeassistant.companion.android.common.assist.AssistViewModelBase
 import io.homeassistant.companion.android.common.data.prefs.WearPrefsRepository
 import io.homeassistant.companion.android.common.data.servers.ServerManager
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.AssistPipelineResponse
-import io.homeassistant.companion.android.common.util.AudioRecorder
 import io.homeassistant.companion.android.common.util.AudioUrlPlayer
 import io.homeassistant.companion.android.conversation.views.AssistMessage
-import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
-@HiltViewModel
-class ConversationViewModel @Inject constructor(
-    private val serverManager: ServerManager,
-    private val audioRecorder: AudioRecorder,
+@HiltViewModel(assistedFactory = ConversationViewModel.Factory::class)
+class ConversationViewModel @AssistedInject constructor(
+    serverManager: ServerManager,
+    @Assisted audioStrategy: AssistAudioStrategy,
     audioUrlPlayer: AudioUrlPlayer,
     private val wearPrefsRepository: WearPrefsRepository,
     application: Application,
-) : AssistViewModelBase(serverManager, audioRecorder, audioUrlPlayer, application) {
+) : AssistViewModelBase(serverManager, audioStrategy, audioUrlPlayer, application) {
+
+    @AssistedFactory
+    interface Factory {
+        fun create(audioStrategy: AssistAudioStrategy): ConversationViewModel
+    }
 
     private var useAssistPipeline = false
     private var useAssistPipelineStt = false
@@ -48,7 +56,8 @@ class ConversationViewModel @Inject constructor(
     private val _pipelines = mutableStateListOf<AssistPipelineResponse>()
     val pipelines: List<AssistPipelineResponse> = _pipelines
 
-    private val startMessage = AssistMessage(application.getString(commonR.string.assist_how_can_i_assist), isInput = false)
+    private val startMessage =
+        AssistMessage(application.getString(commonR.string.assist_how_can_i_assist), isInput = false)
     private val _conversation = mutableStateListOf(startMessage)
     val conversation: List<AssistMessage> = _conversation
 
@@ -82,23 +91,42 @@ class ConversationViewModel @Inject constructor(
             _conversation.add(
                 AssistMessage(
                     if (usingPipelines) {
-                        app.getString(commonR.string.no_assist_support, "2023.5", app.getString(commonR.string.no_assist_support_assist_pipeline))
+                        app.getString(
+                            commonR.string.no_assist_support,
+                            "2023.5",
+                            app.getString(commonR.string.no_assist_support_assist_pipeline),
+                        )
                     } else {
-                        app.getString(commonR.string.no_assist_support, "2023.1", app.getString(commonR.string.no_assist_support_conversation))
+                        app.getString(
+                            commonR.string.no_assist_support,
+                            "2023.1",
+                            app.getString(commonR.string.no_assist_support_conversation),
+                        )
                     },
                     isInput = false,
                 ),
             )
         } else {
             if (serverManager.getServer()?.version?.isAtLeast(2023, 5) == true) {
-                viewModelScope.launch {
+                try {
                     loadPipelines()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to load pipelines")
                 }
             }
 
             return setPipeline(
                 if (useAssistPipeline) {
-                    serverManager.integrationRepository().getLastUsedPipelineId()
+                    try {
+                        serverManager.integrationRepository().getLastUsedPipelineId()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.e(e, "Failed to get last used pipeline id")
+                        null
+                    }
                 } else {
                     null
                 },
@@ -141,7 +169,9 @@ class ConversationViewModel @Inject constructor(
         val onPipelineVersion = serverManager.integrationRepository().isHomeAssistantVersionAtLeast(2023, 5, 0)
 
         useAssistPipeline = onPipelineVersion
-        return if ((onConversationVersion && !onPipelineVersion && config == null) || (onPipelineVersion && config == null)) {
+        return if ((onConversationVersion && !onPipelineVersion && config == null) ||
+            (onPipelineVersion && config == null)
+        ) {
             null // Version OK but couldn't get config (offline)
         } else {
             (onConversationVersion && !onPipelineVersion && config?.components?.contains("conversation") == true) ||
@@ -159,7 +189,7 @@ class ConversationViewModel @Inject constructor(
     fun changePipeline(id: String) = viewModelScope.launch {
         if (id == currentPipeline?.id) return@launch
 
-        stopRecording()
+        stopRecording(sendRecorded = false)
         stopPlayback()
 
         setPipeline(id)
@@ -167,7 +197,14 @@ class ConversationViewModel @Inject constructor(
 
     private suspend fun setPipeline(id: String?): Boolean {
         val pipeline = if (useAssistPipeline) {
-            _pipelines.firstOrNull { it.id == id } ?: serverManager.webSocketRepository().getAssistPipeline(id)
+            _pipelines.firstOrNull { it.id == id } ?: try {
+                serverManager.webSocketRepository().getAssistPipeline(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "Fail get assist pipeline")
+                null
+            }
         } else {
             null
         }
@@ -176,7 +213,13 @@ class ConversationViewModel @Inject constructor(
         if (pipeline != null || !useAssistPipeline) {
             currentPipeline = pipeline
             currentPipeline?.let {
-                serverManager.integrationRepository().setLastUsedPipeline(it.id, pipeline?.sttEngine != null)
+                try {
+                    serverManager.integrationRepository().setLastUsedPipeline(it.id, pipeline?.sttEngine != null)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to set last used pipeline")
+                }
             }
 
             _conversation.clear()
@@ -223,31 +266,30 @@ class ConversationViewModel @Inject constructor(
 
         stopPlayback()
 
-        val recording = try {
-            recorderProactive || audioRecorder.startRecording()
-        } catch (e: Exception) {
-            Timber.e(e, "Exception while starting recording")
-            false
+        if (!recorderProactive) {
+            this@ConversationViewModel.audioStrategy.requestFocus()
+            setupRecorder(
+                onError = {
+                    stopRecording()
+                    _conversation.add(
+                        AssistMessage(app.getString(commonR.string.assist_error), isInput = false, isError = true),
+                    )
+                },
+            )
         }
-
-        if (recording) {
-            if (!recorderProactive) setupRecorderQueue()
-            inputMode = AssistInputMode.VOICE_ACTIVE
-            if (proactive == true) _conversation.add(AssistMessage("…", isInput = true))
-            if (proactive != true) runAssistPipeline(null)
-        } else {
-            _conversation.add(AssistMessage(app.getString(commonR.string.assist_error), isInput = false, isError = true))
-        }
-        recorderProactive = recording && proactive == true
+        inputMode = AssistInputMode.VOICE_ACTIVE
+        if (proactive == true) _conversation.add(AssistMessage.placeholder(isInput = true))
+        if (proactive != true) runAssistPipeline(null)
+        recorderProactive = proactive == true
     }
 
     private fun runAssistPipeline(text: String?) {
         val isVoice = text == null
         stopPlayback()
 
-        val userMessage = AssistMessage(text ?: "…", isInput = true)
+        val userMessage = text?.let { AssistMessage(it, isInput = true) } ?: AssistMessage.placeholder(isInput = true)
         _conversation.add(userMessage)
-        val haMessage = AssistMessage("…", isInput = false)
+        val haMessage = AssistMessage.placeholder(isInput = false)
         if (!isVoice) _conversation.add(haMessage)
         var message = if (isVoice) userMessage else haMessage
 
@@ -282,9 +324,13 @@ class ConversationViewModel @Inject constructor(
                         _conversation.add(lastMessage.copy(message = event.chunk))
                     } else {
                         // Replace last message with the updated message with the new chunk append
-                        _conversation[_conversation.lastIndex] = lastMessage.copy(message = lastMessage.message + event.chunk)
+                        _conversation[_conversation.lastIndex] =
+                            lastMessage.copy(message = lastMessage.message + event.chunk)
                     }
                 }
+                is AssistEvent.PipelineStarted, is AssistEvent.PipelineEnded,
+                is AssistEvent.PlaybackFinished, is AssistEvent.Dismiss,
+                -> { /* No op on Wear */ }
                 is AssistEvent.ContinueConversation -> onMicrophoneInput()
             }
         }

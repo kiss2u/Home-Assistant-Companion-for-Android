@@ -80,9 +80,13 @@ interface IntegrationRepository {
 
     /** Clear the list of orphaned border agent IDs, to use after removing them from storage */
     suspend fun clearOrphanedThreadBorderAgentIds()
+
+    suspend fun shouldAskNotificationPermission(): Boolean?
+
+    suspend fun setAskNotificationPermission(shouldAsk: Boolean)
 }
 
 @AssistedFactory
-interface IntegrationRepositoryFactory {
+internal interface IntegrationRepositoryFactory {
     fun create(serverId: Int): IntegrationRepositoryImpl
 }

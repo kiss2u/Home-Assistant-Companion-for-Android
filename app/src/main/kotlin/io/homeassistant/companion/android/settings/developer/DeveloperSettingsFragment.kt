@@ -25,7 +25,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
-class DeveloperSettingsFragment : DeveloperSettingsView, PreferenceFragmentCompat() {
+class DeveloperSettingsFragment :
+    PreferenceFragmentCompat(),
+    DeveloperSettingsView {
 
     @Inject
     lateinit var presenter: DeveloperSettingsPresenter
@@ -34,9 +36,10 @@ class DeveloperSettingsFragment : DeveloperSettingsView, PreferenceFragmentCompa
     private var threadIntentServer: Int = ServerManager.SERVER_ID_ACTIVE
     private var threadIntentDeviceOnly: Boolean = true
 
-    private val threadPermissionLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        presenter.onThreadPermissionResult(requireContext(), result, threadIntentServer, threadIntentDeviceOnly)
-    }
+    private val threadPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+            presenter.onThreadPermissionResult(requireContext(), result, threadIntentServer, threadIntentDeviceOnly)
+        }
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         presenter.init(this)
@@ -67,16 +70,24 @@ class DeveloperSettingsFragment : DeveloperSettingsView, PreferenceFragmentCompa
         findPreference<Preference>("thread_debug")?.let {
             it.isVisible = presenter.appSupportsThread()
             it.setOnPreferenceClickListener {
-                if (presenter.hasMultipleServers()) {
-                    parentFragmentManager.setFragmentResultListener(ServerChooserFragment.RESULT_KEY, this) { _, bundle ->
-                        if (bundle.containsKey(ServerChooserFragment.RESULT_SERVER)) {
-                            startThreadDebug(bundle.getInt(ServerChooserFragment.RESULT_SERVER))
+                lifecycleScope.launch {
+                    if (presenter.hasMultipleServers()) {
+                        parentFragmentManager.setFragmentResultListener(
+                            ServerChooserFragment.RESULT_KEY,
+                            this@DeveloperSettingsFragment,
+                        ) {
+                                _,
+                                bundle,
+                            ->
+                            if (bundle.containsKey(ServerChooserFragment.RESULT_SERVER)) {
+                                startThreadDebug(bundle.getInt(ServerChooserFragment.RESULT_SERVER))
+                            }
+                            parentFragmentManager.clearFragmentResultListener(ServerChooserFragment.RESULT_KEY)
                         }
-                        parentFragmentManager.clearFragmentResultListener(ServerChooserFragment.RESULT_KEY)
+                        ServerChooserFragment().show(parentFragmentManager, ServerChooserFragment.TAG)
+                    } else {
+                        startThreadDebug(ServerManager.SERVER_ID_ACTIVE)
                     }
-                    ServerChooserFragment().show(parentFragmentManager, ServerChooserFragment.TAG)
-                } else {
-                    startThreadDebug(ServerManager.SERVER_ID_ACTIVE)
                 }
                 return@setOnPreferenceClickListener true
             }
@@ -91,6 +102,17 @@ class DeveloperSettingsFragment : DeveloperSettingsView, PreferenceFragmentCompa
                     .create()
                 activeTaskDialog?.show()
                 presenter.clearWebViewCache()
+                return@setOnPreferenceClickListener true
+            }
+        }
+        findPreference<Preference>("tag_clear_allowed")?.let {
+            it.setOnPreferenceClickListener {
+                presenter.clearAllowedTags()
+                Toast.makeText(
+                    requireContext(),
+                    commonR.string.clear_allowed_tags_complete,
+                    Toast.LENGTH_SHORT,
+                ).show()
                 return@setOnPreferenceClickListener true
             }
         }
@@ -120,7 +142,17 @@ class DeveloperSettingsFragment : DeveloperSettingsView, PreferenceFragmentCompa
         activeTaskDialog?.hide()
         AlertDialog.Builder(requireContext())
             .setTitle(commonR.string.thread_debug)
-            .setMessage("${if (success == true) "✅" else if (success == null) "⚠️" else "⛔"}\n\n$result")
+            .setMessage(
+                "${
+                    if (success == true) {
+                        "✅"
+                    } else if (success == null) {
+                        "⚠️"
+                    } else {
+                        "⛔"
+                    }
+                }\n\n$result",
+            )
             .setPositiveButton(commonR.string.ok, null)
             .show()
     }

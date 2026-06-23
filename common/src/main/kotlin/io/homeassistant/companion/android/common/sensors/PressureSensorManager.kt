@@ -9,9 +9,15 @@ import android.hardware.SensorManager.SENSOR_DELAY_NORMAL
 import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
 import java.math.RoundingMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
-class PressureSensorManager : SensorManager, SensorEventListener {
+class PressureSensorManager :
+    SensorManager,
+    SensorEventListener {
     companion object {
         private var isListenerRegistered = false
         private var listenerLastRegistered = 0
@@ -21,7 +27,7 @@ class PressureSensorManager : SensorManager, SensorEventListener {
             commonR.string.sensor_name_pressure,
             commonR.string.sensor_description_pressure_sensor,
             "mdi:gauge",
-            deviceClass = "pressure",
+            deviceClass = "atmospheric_pressure",
             unitOfMeasurement = "hPa",
             stateClass = SensorManager.STATE_CLASS_MEASUREMENT,
         )
@@ -29,6 +35,8 @@ class PressureSensorManager : SensorManager, SensorEventListener {
 
     private lateinit var latestContext: Context
     private lateinit var mySensorManager: android.hardware.SensorManager
+
+    private val ioScope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job())
 
     override fun docsLink(): String {
         return "https://companion.home-assistant.io/docs/core/sensors#pressure-sensor"
@@ -41,7 +49,7 @@ class PressureSensorManager : SensorManager, SensorEventListener {
         return listOf(pressureSensor)
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return emptyArray()
     }
 
@@ -89,13 +97,15 @@ class PressureSensorManager : SensorManager, SensorEventListener {
     override fun onSensorChanged(event: SensorEvent?) {
         if (event != null) {
             if (event.sensor.type == Sensor.TYPE_PRESSURE && !event.values[0].isNaN()) {
-                onSensorUpdated(
-                    latestContext,
-                    pressureSensor,
-                    event.values[0].toBigDecimal().setScale(1, RoundingMode.HALF_EVEN).toString(),
-                    pressureSensor.statelessIcon,
-                    mapOf(),
-                )
+                ioScope.launch {
+                    onSensorUpdated(
+                        latestContext,
+                        pressureSensor,
+                        event.values[0].toBigDecimal().setScale(1, RoundingMode.HALF_EVEN).toString(),
+                        pressureSensor.statelessIcon,
+                        mapOf(),
+                    )
+                }
             }
         }
         mySensorManager.unregisterListener(this)

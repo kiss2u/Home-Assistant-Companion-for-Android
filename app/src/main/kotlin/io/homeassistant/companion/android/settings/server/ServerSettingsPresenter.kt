@@ -8,14 +8,15 @@ interface ServerSettingsPresenter {
     suspend fun deleteServer()
     fun onFinish()
 
-    fun hasMultipleServers(): Boolean
+    suspend fun hasMultipleServers(): Boolean
     fun updateServerName()
     fun updateUrlStatus()
     fun hasWifi(): Boolean
-    fun isSsidUsed(): Boolean
     fun clearSsids()
 
     fun setAppActive(active: Boolean)
 
-    fun serverURL(): String?
+    suspend fun serverURL(): String?
+
+    suspend fun getAllowInsecureConnection(): Boolean?
 }

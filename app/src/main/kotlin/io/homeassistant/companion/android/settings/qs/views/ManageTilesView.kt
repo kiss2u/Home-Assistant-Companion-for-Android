@@ -38,9 +38,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.homeassistant.companion.android.common.R
+import io.homeassistant.companion.android.common.compose.theme.HATheme
+import io.homeassistant.companion.android.common.util.SdkVersion
 import io.homeassistant.companion.android.settings.qs.ManageTilesViewModel
 import io.homeassistant.companion.android.util.compose.ServerExposedDropdownMenu
-import io.homeassistant.companion.android.util.compose.SingleEntityPicker
+import io.homeassistant.companion.android.util.compose.entity.EntityPicker
 import io.homeassistant.companion.android.util.safeBottomPaddingValues
 import io.homeassistant.companion.android.util.safeBottomWindowInsets
 import kotlinx.coroutines.flow.launchIn
@@ -50,6 +52,7 @@ import kotlinx.coroutines.flow.onEach
 fun ManageTilesView(
     viewModel: ManageTilesViewModel,
     onShowIconDialog: (tag: String?) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -65,6 +68,7 @@ fun ManageTilesView(
     }
 
     Scaffold(
+        modifier = modifier,
         scaffoldState = scaffoldState,
         snackbarHost = {
             SnackbarHost(
@@ -119,7 +123,7 @@ fun ManageTilesView(
                         .fillMaxWidth(),
                 )
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                if (SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) {
                     TextField(
                         value = viewModel.tileSubtitle.orEmpty(),
                         onValueChange = { viewModel.tileSubtitle = it },
@@ -142,19 +146,25 @@ fun ManageTilesView(
                     )
                 }
 
-                SingleEntityPicker(
-                    entities = viewModel.sortedEntities,
-                    currentEntity = viewModel.selectedEntityId,
-                    onEntityCleared = { viewModel.selectEntityId("") },
-                    onEntitySelected = {
-                        viewModel.selectEntityId(it)
-                        return@SingleEntityPicker true
-                    },
-                    modifier = Modifier
-                        .padding(vertical = 16.dp)
-                        .fillMaxWidth(),
-                    label = { Text(stringResource(R.string.tile_entity)) },
-                )
+                // TODO use new theme for Material3 components https://github.com/home-assistant/android/issues/6301
+                HATheme {
+                    EntityPicker(
+                        entities = viewModel.sortedEntities,
+                        selectedEntityId = viewModel.selectedEntityId,
+                        onEntitySelectedId = {
+                            viewModel.selectEntityId(it)
+                        },
+                        onEntityCleared = {
+                            viewModel.selectEntityId("")
+                        },
+                        modifier = Modifier
+                            .padding(vertical = 16.dp),
+                        addButtonText = stringResource(R.string.tile_entity),
+                        entityRegistry = viewModel.entityRegistry,
+                        deviceRegistry = viewModel.deviceRegistry,
+                        areaRegistry = viewModel.areaRegistry,
+                    )
+                }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -192,7 +202,9 @@ fun ManageTilesView(
                     Switch(
                         checked = viewModel.selectedShouldVibrate,
                         onCheckedChange = { viewModel.selectedShouldVibrate = it },
-                        colors = SwitchDefaults.colors(uncheckedThumbColor = colorResource(R.color.colorSwitchUncheckedThumb)),
+                        colors = SwitchDefaults.colors(
+                            uncheckedThumbColor = colorResource(R.color.colorSwitchUncheckedThumb),
+                        ),
                     )
                 }
 
@@ -204,7 +216,9 @@ fun ManageTilesView(
                     Switch(
                         checked = viewModel.tileAuthRequired,
                         onCheckedChange = { viewModel.tileAuthRequired = it },
-                        colors = SwitchDefaults.colors(uncheckedThumbColor = colorResource(R.color.colorSwitchUncheckedThumb)),
+                        colors = SwitchDefaults.colors(
+                            uncheckedThumbColor = colorResource(R.color.colorSwitchUncheckedThumb),
+                        ),
                     )
                 }
 

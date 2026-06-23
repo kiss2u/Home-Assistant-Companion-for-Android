@@ -6,7 +6,9 @@ import android.content.Intent
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.sensors.SensorManager
 
-class LocationSensorManager : BroadcastReceiver(), SensorManager {
+class LocationSensorManager :
+    BroadcastReceiver(),
+    SensorManager {
 
     companion object {
         const val MINIMUM_ACCURACY = 200
@@ -49,6 +51,18 @@ class LocationSensorManager : BroadcastReceiver(), SensorManager {
 
         fun setHighAccuracyModeSetting(context: Context, enabled: Boolean) {}
         fun setHighAccuracyModeIntervalSetting(context: Context, updateInterval: Int) {}
+
+        /**
+         * Builds an explicit-component [Intent] addressed to this receiver that triggers a single
+         * accurate location update via [ACTION_REQUEST_ACCURATE_LOCATION_UPDATE]. No-op in the
+         * minimal flavor since [LocationSensorManager.onReceive] does nothing.
+         */
+        fun createRequestAccurateLocationUpdateIntent(context: Context): Intent = Intent(
+            context,
+            LocationSensorManager::class.java,
+        ).apply {
+            action = ACTION_REQUEST_ACCURATE_LOCATION_UPDATE
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -62,7 +76,7 @@ class LocationSensorManager : BroadcastReceiver(), SensorManager {
         return listOf()
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         // Noop
         return emptyArray()
     }

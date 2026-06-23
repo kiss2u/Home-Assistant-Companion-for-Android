@@ -10,6 +10,7 @@ import androidx.core.content.ContextCompat
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.util.STATE_UNAVAILABLE
 import io.homeassistant.companion.android.common.util.STATE_UNKNOWN
+import io.homeassistant.companion.android.common.util.SdkVersion
 import java.math.RoundingMode
 import kotlin.math.floor
 import timber.log.Timber
@@ -146,9 +147,9 @@ class BatterySensorManager : SensorManager {
     )
 
     override suspend fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        return if (SdkVersion.isAtLeast(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)) {
             defaultSensorList.plus(listOf(remainingChargeTime, batteryCycles))
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        } else if (SdkVersion.isAtLeast(Build.VERSION_CODES.P)) {
             defaultSensorList.plus(remainingChargeTime)
         } else {
             defaultSensorList
@@ -156,18 +157,26 @@ class BatterySensorManager : SensorManager {
     }
 
     override fun hasSensor(context: Context): Boolean {
-        val intent = ContextCompat.registerReceiver(context, null, IntentFilter(Intent.ACTION_BATTERY_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        val intent = ContextCompat.registerReceiver(
+            context,
+            null,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         return intent?.getBooleanExtra(BatteryManager.EXTRA_PRESENT, false) == true
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return emptyArray()
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
-        val intent = ContextCompat.registerReceiver(context, null, IntentFilter(Intent.ACTION_BATTERY_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+    override suspend fun requestSensorUpdate(context: Context) {
+        val intent = ContextCompat.registerReceiver(
+            context,
+            null,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         if (intent != null) {
             updateBatteryLevel(context, intent)
             updateBatteryState(context, intent)
@@ -176,10 +185,10 @@ class BatterySensorManager : SensorManager {
             updateBatteryHealth(context, intent)
             updateBatteryTemperature(context, intent)
             updateBatteryPower(context, intent)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            if (SdkVersion.isAtLeast(Build.VERSION_CODES.P)) {
                 updateRemainingChargeTime(context)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            if (SdkVersion.isAtLeast(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)) {
                 updateBatteryCycles(context, intent)
             }
         }
@@ -436,10 +445,10 @@ class BatterySensorManager : SensorManager {
         return intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10f
     }
 
-    private fun getBatteryCurrent(context: Context, batteryManager: BatteryManager): Float? {
+    private suspend fun getBatteryCurrent(context: Context, batteryManager: BatteryManager): Float? {
         val current = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
         return if (
-            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && current != Int.MIN_VALUE) ||
+            (SdkVersion.isAtLeast(Build.VERSION_CODES.P) && current != Int.MIN_VALUE) ||
             current != 0
         ) {
             val dividerSetting = getNumberSetting(
@@ -454,7 +463,7 @@ class BatterySensorManager : SensorManager {
         }
     }
 
-    private fun getBatteryVolts(context: Context, intent: Intent): Float? {
+    private suspend fun getBatteryVolts(context: Context, intent: Intent): Float? {
         val voltage = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
         return if (voltage != 0) {
             val dividerSetting = getNumberSetting(

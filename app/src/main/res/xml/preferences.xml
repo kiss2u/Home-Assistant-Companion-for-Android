@@ -42,6 +42,10 @@
     </PreferenceCategory>
     <PreferenceCategory
         android:title="@string/other_settings">
+        <Preference
+            android:key="gestures"
+            android:icon="@drawable/ic_gestures"
+            android:title="@string/gestures"/>
         <SwitchPreference
             android:key="fullscreen"
             android:icon="@drawable/ic_fullscreen"
@@ -136,6 +140,11 @@
     <PreferenceCategory
         android:title="@string/assist"
         android:key="assist">
+        <Preference
+            android:key="assist_settings"
+            android:icon="@drawable/ic_comment_processing_outline"
+            android:title="@string/assist_for_android"
+            android:summary="@string/assist_summary" />
         <SwitchPreference
             android:key="assist_voice_command_intent"
             android:icon="@drawable/ic_headphones_settings"
@@ -191,6 +200,22 @@
             android:summary="@string/manage_widgets_summary" />
     </PreferenceCategory>
     <PreferenceCategory
+        android:key="launcher_category"
+        android:title="@string/launcher"
+        app:isPreferenceVisible="false">
+        <SwitchPreference
+            android:key="enable_ha_launcher"
+            android:icon="@drawable/ic_android_debug_bridge"
+            app:isPreferenceVisible="true"
+            android:title="@string/launcher_option_title"
+            android:summary="@string/launcher_option_summary" />
+        <Preference
+            android:key="set_launcher_app"
+            android:title="@string/default_launcher_prompt"
+            android:summary="@string/default_launcher_prompt_def"
+            android:icon="@drawable/ic_home_variant_outline" />
+    </PreferenceCategory>
+    <PreferenceCategory
         android:title="@string/need_help">
         <Preference
             android:key="docs"
@@ -214,6 +239,11 @@
             android:icon="@drawable/ic_changelog"
             android:title="@string/show_changelog"
             android:summary="@string/show_changelog_summary" />
+        <SwitchPreference
+            android:key="change_log_popup_enabled"
+            android:icon="@drawable/ic_changelog"
+            android:title="@string/enable_change_log_popup"
+            android:summary="@string/enable_change_log_popup_summary" />
         <Preference
             android:key="changelog_github"
             android:title="@string/changelog"
@@ -225,6 +255,11 @@
             android:icon="@drawable/ic_stat_ic_notification_blue"
             android:title="@string/application_version"
             android:summary="1.0.0 (1)"/>
+        <Preference
+            android:key="licenses"
+            android:icon="@drawable/ic_license"
+            android:title="@string/licenses"
+            android:summary="@string/licenses_summary"/>
         <Preference
             android:key="privacy"
             android:icon="@drawable/ic_incognito"

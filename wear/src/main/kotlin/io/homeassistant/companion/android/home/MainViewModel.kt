@@ -3,14 +3,9 @@ package io.homeassistant.companion.android.home
 import android.app.Application
 import android.content.ComponentName
 import android.content.pm.PackageManager
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.State
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.runtime.toMutableStateList
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -18,7 +13,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.homeassistant.companion.android.BuildConfig
 import io.homeassistant.companion.android.HomeAssistantApplication
 import io.homeassistant.companion.android.common.data.integration.Entity
-import io.homeassistant.companion.android.common.data.integration.domain
+import io.homeassistant.companion.android.common.data.integration.IntegrationDomains.CAMERA_DOMAIN
+import io.homeassistant.companion.android.common.data.integration.IntegrationDomains.CLIMATE_DOMAIN
 import io.homeassistant.companion.android.common.data.prefs.impl.entities.TemplateTileConfig
 import io.homeassistant.companion.android.common.data.websocket.WebSocketState
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.AreaRegistryResponse
@@ -45,6 +41,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -65,12 +62,73 @@ class MainViewModel @Inject constructor(
         ERROR,
     }
 
+    /**
+     * Holds entity classification information for filtering entities in the UI.
+     */
+    @Immutable
+    data class EntityClassification(
+        val entitiesWithoutArea: Set<String> = emptySet(),
+        val entitiesWithCategory: Set<String> = emptySet(),
+        val entitiesHidden: Set<String> = emptySet(),
+        val hasAreasToShow: Boolean = false,
+        val hasMoreEntitiesToShow: Boolean = false,
+    )
+
+    /**
+     * Holds the navigation state for the entity list screen, set before navigating.
+     */
+    @Immutable
+    data class EntityListNavigation(
+        val entityListIds: Map<String, List<String>> = emptyMap(),
+        val entityListsOrder: List<String> = emptyList(),
+        val entityListFilter: (Entity) -> Boolean = { true },
+        val entityLists: Map<String, List<Entity>> = emptyMap(),
+    )
+
+    /**
+     * Immutable UI state for MainView that contains thread-safe snapshots of all data.
+     */
+    @Immutable
+    data class MainViewUiState(
+        val entities: Map<String, Entity> = emptyMap(),
+        val cameraEntities: List<Entity> = emptyList(),
+        val climateEntities: List<Entity> = emptyList(),
+        val favoriteCaches: List<FavoriteCaches> = emptyList(),
+        val isFavoritesOnly: Boolean = false,
+        val isHapticEnabled: Boolean = false,
+        val isToastEnabled: Boolean = false,
+        val isShowShortcutTextEnabled: Boolean = false,
+        val isAssistantAppAllowed: Boolean = true,
+        val areNotificationsAllowed: Boolean = false,
+        val templateTiles: Map<Int, TemplateTileConfig> = emptyMap(),
+        val shortcutEntitiesMap: Map<Int?, List<SimplifiedEntity>> = emptyMap(),
+        val loadingState: LoadingState = LoadingState.LOADING,
+        val entitiesByArea: Map<String, List<String>> = emptyMap(),
+        val areas: List<AreaRegistryResponse> = emptyList(),
+        val entitiesByDomainFilteredOrder: List<String> = emptyList(),
+        val entitiesByDomainFiltered: Map<String, List<String>> = emptyMap(),
+        val entitiesByDomain: Map<String, List<String>> = emptyMap(),
+        val favoriteEntityIds: List<String> = emptyList(),
+        val allEntitiesByDomain: Map<String, List<Entity>> = emptyMap(),
+        val domainNames: Map<String, String> = emptyMap(),
+        val entityListNavigation: EntityListNavigation = EntityListNavigation(),
+    )
+
     private val app = application
 
     private lateinit var homePresenter: HomePresenter
-    private var areaRegistry: List<AreaRegistryResponse>? = null
-    private var deviceRegistry: List<DeviceRegistryResponse>? = null
-    private var entityRegistry: List<EntityRegistryResponse>? = null
+
+    /**
+     * Internal thread-safe holder for registry data used for entity classification.
+     * Wrapped in a [MutableStateFlow] to guarantee visibility and consistency across dispatchers.
+     */
+    private data class Registries(
+        val area: List<AreaRegistryResponse> = emptyList(),
+        val device: List<DeviceRegistryResponse> = emptyList(),
+        val entity: List<EntityRegistryResponse> = emptyList(),
+    )
+
+    private val registries = MutableStateFlow(Registries())
 
     // TODO: This is bad, do this instead: https://stackoverflow.com/questions/46283981/android-viewmodel-additional-arguments
     fun init(homePresenter: HomePresenter) {
@@ -79,63 +137,56 @@ class MainViewModel @Inject constructor(
         loadEntities()
     }
 
-    // entities
-    var entities = mutableStateMapOf<String, Entity>()
-        private set
-
     private val _supportedEntities = MutableStateFlow(emptyList<String>())
     val supportedEntities = _supportedEntities.asStateFlow()
 
-    /**
-     * IDs of favorites in the Favorites database.
-     */
-    val favoriteEntityIds = favoritesDao.getAllFlow().collectAsState()
-    private val favoriteCaches = favoriteCachesDao.getAll()
+    private val _entityClassification = MutableStateFlow(EntityClassification())
+    val entityClassification = _entityClassification.asStateFlow()
 
-    val shortcutEntitiesMap = mutableStateMapOf<Int?, SnapshotStateList<SimplifiedEntity>>()
+    private val _mainViewUiState = MutableStateFlow(MainViewUiState())
+    val mainViewUiState = _mainViewUiState.asStateFlow()
+
+    private inline fun updateUiState(transform: (MainViewUiState) -> MainViewUiState) {
+        _mainViewUiState.update { transform(it) }
+    }
 
     val cameraTiles = cameraTileDao.getAllFlow().collectAsState()
-    var cameraEntitiesMap = mutableStateMapOf<String, SnapshotStateList<Entity>>()
-        private set
 
     val thermostatTiles = thermostatTileDao.getAllFlow().collectAsState()
-    var climateEntitiesMap = mutableStateMapOf<String, SnapshotStateList<Entity>>()
-        private set
 
-    var areas = mutableListOf<AreaRegistryResponse>()
-        private set
+    fun setEntityListNavigation(
+        entityListIds: Map<String, List<String>>,
+        entityListsOrder: List<String>,
+        entityListFilter: (Entity) -> Boolean,
+    ) {
+        updateUiState {
+            it.copy(
+                entityListNavigation = EntityListNavigation(
+                    entityListIds = entityListIds,
+                    entityListsOrder = entityListsOrder,
+                    entityListFilter = entityListFilter,
+                    entityLists = entityListIds.resolveEntities(it.entities),
+                ),
+            )
+        }
+    }
 
-    var entitiesByArea = mutableStateMapOf<String, SnapshotStateList<Entity>>()
-        private set
-    var entitiesByDomain = mutableStateMapOf<String, SnapshotStateList<Entity>>()
-        private set
-    var entitiesByAreaOrder = mutableStateListOf<String>()
-        private set
-    var entitiesByDomainOrder = mutableStateListOf<String>()
-        private set
+    private fun Map<String, List<String>>.resolveEntities(
+        allEntities: Map<String, Entity>,
+    ): Map<String, List<Entity>> = mapValues { (_, ids) ->
+        ids.mapNotNull { id -> allEntities[id] }
+    }
 
-    // Content of EntityListView
-    var entityLists = mutableStateMapOf<String, List<Entity>>()
-    var entityListsOrder = mutableStateListOf<String>()
-    var entityListFilter: (Entity) -> Boolean = { true }
-
-    // settings
-    var loadingState = mutableStateOf(LoadingState.LOADING)
-        private set
-    var isHapticEnabled = mutableStateOf(false)
-        private set
-    var isToastEnabled = mutableStateOf(false)
-        private set
-    var isShowShortcutTextEnabled = mutableStateOf(false)
-        private set
-    var templateTiles = mutableStateMapOf<Int, TemplateTileConfig>()
-        private set
-    var isFavoritesOnly by mutableStateOf(false)
-        private set
-    var isAssistantAppAllowed by mutableStateOf(true)
-        private set
-    var areNotificationsAllowed by mutableStateOf(false)
-        private set
+    init {
+        viewModelScope.launch {
+            favoritesDao.getAllFlow().collect { favoriteIds ->
+                updateUiState { it.copy(favoriteEntityIds = favoriteIds) }
+            }
+        }
+        viewModelScope.launch {
+            updateUiState { it.copy(favoriteCaches = favoriteCachesDao.getAll()) }
+        }
+    }
 
     fun supportedDomains(): List<String> = HomePresenterImpl.supportedDomains
 
@@ -152,73 +203,66 @@ class MainViewModel @Inject constructor(
                 return@launch
             }
             loadShortcutTileEntities()
-            isHapticEnabled.value = homePresenter.getWearHapticFeedback()
-            isToastEnabled.value = homePresenter.getWearToastConfirmation()
-            isShowShortcutTextEnabled.value = homePresenter.getShowShortcutText()
-            templateTiles.clear()
-            templateTiles.putAll(homePresenter.getAllTemplateTiles())
-            isFavoritesOnly = homePresenter.getWearFavoritesOnly()
 
             val assistantAppComponent = ComponentName(
                 BuildConfig.APPLICATION_ID,
                 "io.homeassistant.companion.android.conversation.AssistantActivity",
             )
-            isAssistantAppAllowed =
-                app.packageManager.getComponentEnabledSetting(assistantAppComponent) != PackageManager.COMPONENT_ENABLED_STATE_DISABLED
-
-            refreshNotificationPermission()
+            updateUiState {
+                it.copy(
+                    templateTiles = homePresenter.getAllTemplateTiles(),
+                    isHapticEnabled = homePresenter.getWearHapticFeedback(),
+                    isToastEnabled = homePresenter.getWearToastConfirmation(),
+                    isShowShortcutTextEnabled = homePresenter.getShowShortcutText(),
+                    isFavoritesOnly = homePresenter.getWearFavoritesOnly(),
+                    isAssistantAppAllowed = app.packageManager.getComponentEnabledSetting(assistantAppComponent) !=
+                        PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    areNotificationsAllowed = NotificationManagerCompat.from(app).areNotificationsEnabled(),
+                )
+            }
         }
     }
 
     fun loadShortcutTileEntities() {
         viewModelScope.launch {
-            val map = homePresenter.getAllTileShortcuts().mapValues { (_, entities) ->
-                entities.toMutableStateList()
+            updateUiState {
+                it.copy(shortcutEntitiesMap = homePresenter.getAllTileShortcuts())
             }
-            shortcutEntitiesMap.clear()
-            shortcutEntitiesMap.putAll(map)
         }
     }
 
     fun loadTemplateTiles() {
         viewModelScope.launch {
-            templateTiles.clear()
-            templateTiles.putAll(homePresenter.getAllTemplateTiles())
+            updateUiState { it.copy(templateTiles = homePresenter.getAllTemplateTiles()) }
         }
     }
 
     fun loadEntities() {
-        if (!homePresenter.isConnected()) return
         viewModelScope.launch {
+            if (!homePresenter.isConnected()) return@launch
             try {
                 // Load initial state
-                loadingState.value = LoadingState.LOADING
+                updateUiState { it.copy(loadingState = LoadingState.LOADING) }
                 updateUI()
 
                 // Finished initial load, update state
                 val webSocketState = homePresenter.getWebSocketState()
-                if (webSocketState == WebSocketState.CLOSED_AUTH) {
+                if (webSocketState == WebSocketState.ClosedAuth) {
                     homePresenter.onInvalidAuthorization()
                     return@launch
                 }
-                loadingState.value = if (webSocketState == WebSocketState.ACTIVE) {
-                    LoadingState.READY
-                } else {
-                    LoadingState.ERROR
+                updateUiState {
+                    it.copy(
+                        loadingState = if (webSocketState == WebSocketState.Active) {
+                            LoadingState.READY
+                        } else {
+                            LoadingState.ERROR
+                        },
+                    )
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Exception while loading entities")
-                loadingState.value = LoadingState.ERROR
-            }
-        }
-    }
-
-    private fun updateEntityStates(entity: Entity) {
-        if (supportedDomains().contains(entity.domain)) {
-            entities[entity.entityId] = entity
-            // add to cache if part of favorites
-            if (favoriteEntityIds.value.contains(entity.entityId)) {
-                addCachedFavorite(entity.entityId)
+                updateUiState { it.copy(loadingState = LoadingState.ERROR) }
             }
         }
     }
@@ -230,27 +274,21 @@ class MainViewModel @Inject constructor(
         val getEntityRegistry = async { homePresenter.getEntityRegistry() }
         val getEntities = async { homePresenter.getEntities() }
 
+        val newEntityRegistry = getEntityRegistry.await().orEmpty()
+        val isFavoritesOnly = mainViewUiState.value.isFavoritesOnly
         if (!isFavoritesOnly) {
-            areaRegistry = getAreaRegistry.await()?.also {
-                areas.clear()
-                areas.addAll(it)
+            val newAreaRegistry = getAreaRegistry.await().orEmpty()
+            val newDeviceRegistry = getDeviceRegistry.await().orEmpty()
+            registries.update {
+                Registries(area = newAreaRegistry, device = newDeviceRegistry, entity = newEntityRegistry)
             }
-            deviceRegistry = getDeviceRegistry.await()
+        } else {
+            registries.update { it.copy(entity = newEntityRegistry) }
         }
-        entityRegistry = getEntityRegistry.await()
 
         _supportedEntities.value = getSupportedEntities()
 
-        getEntities.await()?.also {
-            entities.clear()
-            it.forEach { state -> updateEntityStates(state) }
-
-            // Special lists: camera entities and climate entities
-            val cameraEntities = it.filter { entity -> entity.domain == "camera" }
-            cameraEntitiesMap["camera"] = mutableStateListOf<Entity>().apply { addAll(cameraEntities) }
-            val climateEntities = it.filter { entity -> entity.domain == "climate" }
-            climateEntitiesMap["climate"] = mutableStateListOf<Entity>().apply { addAll(climateEntities) }
-        }
+        getEntities.await()?.let { updateEntityStates(it, replaceAll = true) }
         if (!isFavoritesOnly) {
             updateEntityDomains()
         }
@@ -260,34 +298,84 @@ class MainViewModel @Inject constructor(
         if (!homePresenter.isConnected()) {
             return
         }
-        homePresenter.getEntityUpdates(supportedEntities.value)?.collect {
-            updateEntityStates(it)
-            if (!isFavoritesOnly) {
+        homePresenter.getEntityUpdates(supportedEntities.value)?.collect { entity ->
+            updateEntityStates(listOf(entity))
+            if (!mainViewUiState.value.isFavoritesOnly) {
                 updateEntityDomains()
             }
         }
     }
 
+    /**
+     * Filters supported entities, updates UI state, and caches favorites.
+     * When [replaceAll] is true, replaces the entire entity map; otherwise merges into existing.
+     */
+    private fun updateEntityStates(entities: List<Entity>, replaceAll: Boolean = false) {
+        val supportedDomains = supportedDomains()
+        val supportedIds = mutableSetOf<String>()
+        updateUiState { uiState ->
+            val supported = mutableMapOf<String, Entity>()
+            val cameraEntities = if (replaceAll) {
+                mutableMapOf()
+            } else {
+                uiState.cameraEntities.associateByTo(
+                    mutableMapOf(),
+                ) {
+                    it.entityId
+                }
+            }
+            val climateEntities = if (replaceAll) {
+                mutableMapOf()
+            } else {
+                uiState.climateEntities.associateByTo(
+                    mutableMapOf(),
+                ) {
+                    it.entityId
+                }
+            }
+            for (entity in entities) {
+                when (entity.domain) {
+                    CAMERA_DOMAIN -> cameraEntities[entity.entityId] = entity
+                    CLIMATE_DOMAIN -> climateEntities[entity.entityId] = entity
+                }
+                if (entity.domain in supportedDomains) {
+                    supported[entity.entityId] = entity
+                }
+            }
+            supportedIds.addAll(supported.keys)
+            val updatedEntities = if (replaceAll) supported else uiState.entities + supported
+            uiState.copy(
+                entities = updatedEntities,
+                cameraEntities = cameraEntities.values.toList(),
+                climateEntities = climateEntities.values.toList(),
+                allEntitiesByDomain = updatedEntities.values.groupBy { it.domain },
+                entityListNavigation = uiState.entityListNavigation.copy(
+                    entityLists = uiState.entityListNavigation.entityListIds.resolveEntities(updatedEntities),
+                ),
+            )
+        }
+        val favoriteIds = mainViewUiState.value.favoriteEntityIds
+        supportedIds
+            .filter { it in favoriteIds }
+            .forEach { addCachedFavorite(it) }
+    }
+
     suspend fun areaUpdates() {
-        if (!homePresenter.isConnected() || isFavoritesOnly) {
+        if (!homePresenter.isConnected() || mainViewUiState.value.isFavoritesOnly) {
             return
         }
         homePresenter.getAreaRegistryUpdates()?.throttleLatest(1000)?.collect {
-            areaRegistry = homePresenter.getAreaRegistry()
-            areas.clear()
-            areaRegistry?.let {
-                areas.addAll(it)
-            }
+            registries.update { it.copy(area = homePresenter.getAreaRegistry().orEmpty()) }
             updateEntityDomains()
         }
     }
 
     suspend fun deviceUpdates() {
-        if (!homePresenter.isConnected() || isFavoritesOnly) {
+        if (!homePresenter.isConnected() || mainViewUiState.value.isFavoritesOnly) {
             return
         }
         homePresenter.getDeviceRegistryUpdates()?.throttleLatest(1000)?.collect {
-            deviceRegistry = homePresenter.getDeviceRegistry()
+            registries.update { it.copy(device = homePresenter.getDeviceRegistry().orEmpty()) }
             updateEntityDomains()
         }
     }
@@ -297,60 +385,121 @@ class MainViewModel @Inject constructor(
             return
         }
         homePresenter.getEntityRegistryUpdates()?.throttleLatest(1000)?.collect {
-            entityRegistry = homePresenter.getEntityRegistry()
+            registries.update { it.copy(entity = homePresenter.getEntityRegistry().orEmpty()) }
             _supportedEntities.value = getSupportedEntities()
             updateEntityDomains()
         }
     }
 
-    private fun getSupportedEntities(): List<String> =
-        entityRegistry
-            .orEmpty()
-            .map { it.entityId }
-            .filter { it.split(".")[0] in supportedDomains() }
+    private fun getSupportedEntities(): List<String> = registries.value.entity
+        .map { it.entityId }
+        .filter { it.split(".")[0] in supportedDomains() }
 
-    private fun updateEntityDomains() {
-        val entitiesList = entities.values.toList().sortedBy { it.entityId }
-        val areasList = areaRegistry.orEmpty().sortedBy { it.name }
+    /**
+     * Computes entity groupings by area and domain, then updates UiState in a single shot.
+     * This function does a lot of manipulation and could take some time so we need
+     * to make sure it doesn't happen in the Main thread.
+     */
+    private suspend fun updateEntityDomains() = withContext(Dispatchers.Default) {
+        val entities = mainViewUiState.value.entities
+        val entitiesList = entities.values.sortedBy { it.entityId }
+        val regs = registries.value
+        val areasList = regs.area.sortedBy { it.name }
         val domainsList = entitiesList.map { it.domain }.distinct()
 
-        // Create a list with all areas + their entities
-        areasList.forEach { area ->
-            val entitiesInArea = mutableStateListOf<Entity>()
-            entitiesInArea.addAll(
-                entitiesList
-                    .filter { getAreaForEntity(it.entityId)?.areaId == area.areaId }
-                    .sortedBy { (it.attributes["friendly_name"] ?: it.entityId) as String },
-            )
-            entitiesByArea[area.areaId]?.let {
-                it.clear()
-                it.addAll(entitiesInArea)
-            } ?: run {
-                entitiesByArea[area.areaId] = entitiesInArea
+        // Single pass: compute entity metadata and cache area lookups to avoid redundant calls
+        val entityAreaMap = mutableMapOf<String, AreaRegistryResponse?>()
+        val withoutArea = mutableSetOf<String>()
+        val withCategory = mutableSetOf<String>()
+        val hidden = mutableSetOf<String>()
+
+        entities.keys.forEach { entityId ->
+            val area = RegistriesDataHandler.getAreaForEntity(entityId, regs.area, regs.device, regs.entity)
+            entityAreaMap[entityId] = area
+
+            if (area == null) {
+                withoutArea.add(entityId)
             }
-        }
-        entitiesByAreaOrder.clear()
-        entitiesByAreaOrder.addAll(areasList.map { it.areaId })
-        // Quick check: are there any areas in the list that no longer exist?
-        entitiesByArea.forEach {
-            if (!areasList.any { item -> item.areaId == it.key }) {
-                entitiesByArea.remove(it.key)
+            if (RegistriesDataHandler.getCategoryForEntity(entityId, regs.entity) != null) {
+                withCategory.add(entityId)
+            }
+            if (RegistriesDataHandler.getHiddenByForEntity(entityId, regs.entity) != null) {
+                hidden.add(entityId)
             }
         }
 
-        // Create a list with all discovered domains + their entities
+        // Determine if entity should be shown in filtered views
+        val shouldShowEntity: (String) -> Boolean = { entityId ->
+            entityId !in withCategory && entityId !in hidden
+        }
+
+        // Group entities by area
+        val computedEntitiesByArea = mutableMapOf<String, List<String>>()
+        areasList.forEach { area ->
+            val entitiesInArea = entitiesList
+                .filter { entityAreaMap[it.entityId]?.areaId == area.areaId }
+                .sortedBy { (it.attributes["friendly_name"] ?: it.entityId) as String }
+            computedEntitiesByArea[area.areaId] = entitiesInArea.map { it.entityId }
+        }
+
+        // Group entities by domain (both full and filtered) in a single pass
+        val computedEntitiesByDomain = mutableMapOf<String, List<String>>()
+        val computedAllEntitiesByDomain = mutableMapOf<String, List<Entity>>()
+        val computedEntitiesByDomainFiltered = mutableMapOf<String, List<String>>()
+        val filteredDomainsList = mutableListOf<String>()
+
         domainsList.forEach { domain ->
-            val entitiesInDomain = mutableStateListOf<Entity>()
-            entitiesInDomain.addAll(entitiesList.filter { it.domain == domain })
-            entitiesByDomain[domain]?.let {
-                it.clear()
-                it.addAll(entitiesInDomain)
-            } ?: run {
-                entitiesByDomain[domain] = entitiesInDomain
+            val entitiesInDomain = entitiesList.filter { it.domain == domain }
+            computedEntitiesByDomain[domain] = entitiesInDomain.map { it.entityId }
+            computedAllEntitiesByDomain[domain] = entitiesInDomain
+
+            // Filtered entities (without area, category, or hidden status)
+            val entitiesInDomainFiltered = entitiesInDomain.filter { entity ->
+                entity.entityId in withoutArea &&
+                    entity.entityId !in withCategory &&
+                    entity.entityId !in hidden
+            }
+            if (entitiesInDomainFiltered.isNotEmpty()) {
+                filteredDomainsList.add(domain)
+                computedEntitiesByDomainFiltered[domain] = entitiesInDomainFiltered.map { it.entityId }
             }
         }
-        entitiesByDomainOrder.clear()
-        entitiesByDomainOrder.addAll(domainsList)
+
+        val computedDomainNames = domainsList.associateWith { domain ->
+            stringForDomain(domain) ?: domain
+        }
+
+        // Compute UI visibility flags
+        val hasAreasToShow = computedEntitiesByArea.any { (_, entityIds) ->
+            entityIds.any { entityId -> shouldShowEntity(entityId) }
+        }
+        val hasMoreEntitiesToShow = withoutArea.any(shouldShowEntity)
+
+        // Update entity classification with all computed values
+        _entityClassification.value = EntityClassification(
+            entitiesWithoutArea = withoutArea,
+            entitiesWithCategory = withCategory,
+            entitiesHidden = hidden,
+            hasAreasToShow = hasAreasToShow,
+            hasMoreEntitiesToShow = hasMoreEntitiesToShow,
+        )
+
+        // Update UiState in a single shot
+        updateUiState { uiState ->
+            uiState.copy(
+                entities = entities,
+                entitiesByArea = computedEntitiesByArea,
+                areas = areasList,
+                entitiesByDomainFilteredOrder = filteredDomainsList,
+                entitiesByDomainFiltered = computedEntitiesByDomainFiltered,
+                entitiesByDomain = computedEntitiesByDomain,
+                allEntitiesByDomain = computedAllEntitiesByDomain,
+                domainNames = computedDomainNames,
+                entityListNavigation = uiState.entityListNavigation.copy(
+                    entityLists = uiState.entityListNavigation.entityListIds.resolveEntities(entities),
+                ),
+            )
+        }
     }
 
     fun toggleEntity(entityId: String, state: String) {
@@ -358,16 +507,19 @@ class MainViewModel @Inject constructor(
             homePresenter.onEntityClicked(entityId, state)
         }
     }
+
     fun setFanSpeed(entityId: String, speed: Float) {
         viewModelScope.launch {
             homePresenter.onFanSpeedChanged(entityId, speed)
         }
     }
+
     fun setBrightness(entityId: String, brightness: Float) {
         viewModelScope.launch {
             homePresenter.onBrightnessChanged(entityId, brightness)
         }
     }
+
     fun setColorTemp(entityId: String, colorTemp: Float, isKelvin: Boolean) {
         viewModelScope.launch {
             homePresenter.onColorTempChanged(entityId, colorTemp, isKelvin)
@@ -421,15 +573,6 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun getAreaForEntity(entityId: String): AreaRegistryResponse? =
-        RegistriesDataHandler.getAreaForEntity(entityId, areaRegistry, deviceRegistry, entityRegistry)
-
-    fun getCategoryForEntity(entityId: String): String? =
-        RegistriesDataHandler.getCategoryForEntity(entityId, entityRegistry)
-
-    fun getHiddenByForEntity(entityId: String): String? =
-        RegistriesDataHandler.getHiddenByForEntity(entityId, entityRegistry)
-
     /**
      * Clears all favorites in the database.
      */
@@ -460,7 +603,8 @@ class MainViewModel @Inject constructor(
 
     fun setThermostatTileRefreshInterval(tileId: Int, interval: Long) = viewModelScope.launch {
         val current = thermostatTileDao.get(tileId)
-        val updated = current?.copy(refreshInterval = interval) ?: ThermostatTile(id = tileId, refreshInterval = interval)
+        val updated =
+            current?.copy(refreshInterval = interval) ?: ThermostatTile(id = tileId, refreshInterval = interval)
         thermostatTileDao.add(updated)
     }
 
@@ -472,22 +616,26 @@ class MainViewModel @Inject constructor(
 
     fun setTileShortcut(tileId: Int?, index: Int, entity: SimplifiedEntity) {
         viewModelScope.launch {
-            val shortcutEntities = shortcutEntitiesMap[tileId]!!
-            if (index < shortcutEntities.size) {
-                shortcutEntities[index] = entity
-            } else {
-                shortcutEntities.add(entity)
+            val current = mainViewUiState.value.shortcutEntitiesMap[tileId].orEmpty()
+            val updated = current.toMutableList().apply {
+                if (index < size) set(index, entity) else add(entity)
             }
-            homePresenter.setTileShortcuts(tileId, entities = shortcutEntities)
+            homePresenter.setTileShortcuts(tileId, entities = updated)
+            updateUiState {
+                it.copy(shortcutEntitiesMap = it.shortcutEntitiesMap + (tileId to updated))
+            }
         }
     }
 
     fun clearTileShortcut(tileId: Int?, index: Int) {
         viewModelScope.launch {
-            val shortcutEntities = shortcutEntitiesMap[tileId]!!
-            if (index < shortcutEntities.size) {
-                shortcutEntities.removeAt(index)
-                homePresenter.setTileShortcuts(tileId, entities = shortcutEntities)
+            val current = mainViewUiState.value.shortcutEntitiesMap[tileId] ?: return@launch
+            if (index < current.size) {
+                val updated = current.toMutableList().apply { removeAt(index) }
+                homePresenter.setTileShortcuts(tileId, entities = updated)
+                updateUiState {
+                    it.copy(shortcutEntitiesMap = it.shortcutEntitiesMap + (tileId to updated))
+                }
             }
         }
     }
@@ -495,36 +643,40 @@ class MainViewModel @Inject constructor(
     fun setHapticEnabled(enabled: Boolean) {
         viewModelScope.launch {
             homePresenter.setWearHapticFeedback(enabled)
-            isHapticEnabled.value = enabled
+            updateUiState { it.copy(isHapticEnabled = enabled) }
         }
     }
 
     fun setToastEnabled(enabled: Boolean) {
         viewModelScope.launch {
             homePresenter.setWearToastConfirmation(enabled)
-            isToastEnabled.value = enabled
+            updateUiState { it.copy(isToastEnabled = enabled) }
         }
     }
 
     fun setShowShortcutTextEnabled(enabled: Boolean) {
         viewModelScope.launch {
             homePresenter.setShowShortcutTextEnabled(enabled)
-            isShowShortcutTextEnabled.value = enabled
+            updateUiState { it.copy(isShowShortcutTextEnabled = enabled) }
         }
     }
 
     fun setWearFavoritesOnly(enabled: Boolean) {
         viewModelScope.launch {
             homePresenter.setWearFavoritesOnly(enabled)
-            isFavoritesOnly = enabled
+            updateUiState { it.copy(isFavoritesOnly = enabled) }
+            if (!enabled) {
+                updateEntityDomains()
+            }
         }
     }
 
     fun setTemplateTileRefreshInterval(tileId: Int, interval: Int) {
         viewModelScope.launch {
             homePresenter.setTemplateTileRefreshInterval(tileId, interval)
-            templateTiles[tileId]?.let {
-                templateTiles[tileId] = it.copy(refreshInterval = interval)
+            updateUiState { state ->
+                val current = state.templateTiles[tileId] ?: return@updateUiState state
+                state.copy(templateTiles = state.templateTiles + (tileId to current.copy(refreshInterval = interval)))
             }
         }
     }
@@ -541,18 +693,15 @@ class MainViewModel @Inject constructor(
             favoritesDao.delete(entityId)
             favoriteCachesDao.delete(entityId)
 
-            if (favoritesDao.getAll().isEmpty() && isFavoritesOnly) {
+            if (favoritesDao.getAll().isEmpty() && mainViewUiState.value.isFavoritesOnly) {
                 setWearFavoritesOnly(false)
             }
         }
     }
 
-    fun getCachedEntity(entityId: String): FavoriteCaches? =
-        favoriteCaches.find { it.id == entityId }
-
     private fun addCachedFavorite(entityId: String) {
         viewModelScope.launch {
-            val entity = entities[entityId]
+            val entity = mainViewUiState.value.entities[entityId]
             val attributes = entity?.attributes as Map<*, *>
             val icon = attributes["icon"] as String?
             val name = attributes["friendly_name"]?.toString() ?: entityId
@@ -567,14 +716,20 @@ class MainViewModel @Inject constructor(
         )
         app.packageManager.setComponentEnabledSetting(
             assistantAppComponent,
-            if (allowed) PackageManager.COMPONENT_ENABLED_STATE_DEFAULT else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            if (allowed) {
+                PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+            } else {
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+            },
             PackageManager.DONT_KILL_APP,
         )
-        isAssistantAppAllowed = allowed
+        updateUiState { it.copy(isAssistantAppAllowed = allowed) }
     }
 
     fun refreshNotificationPermission() {
-        areNotificationsAllowed = NotificationManagerCompat.from(app).areNotificationsEnabled()
+        updateUiState {
+            it.copy(areNotificationsAllowed = NotificationManagerCompat.from(app).areNotificationsEnabled())
+        }
     }
 
     fun logout() {
@@ -593,14 +748,13 @@ class MainViewModel @Inject constructor(
     /**
      * Convert a Flow into a State object that updates until the view model is cleared.
      */
-    private fun <T> Flow<T>.collectAsState(
-        initial: T,
-    ): State<T> {
+    private fun <T> Flow<T>.collectAsState(initial: T): State<T> {
         val state = mutableStateOf(initial)
         viewModelScope.launch {
             collect { state.value = it }
         }
         return state
     }
+
     private fun <T> Flow<List<T>>.collectAsState(): State<List<T>> = collectAsState(initial = emptyList())
 }

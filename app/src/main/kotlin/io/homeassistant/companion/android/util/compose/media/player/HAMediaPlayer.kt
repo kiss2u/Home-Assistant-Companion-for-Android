@@ -232,7 +232,7 @@ private fun BottomControls(
     player: Player,
     isFullScreen: Boolean,
     onClickFullscreen: () -> Unit,
-    modifier: Modifier,
+    modifier: Modifier = Modifier,
 ) {
     Row(
         modifier = modifier
@@ -317,7 +317,7 @@ private fun RowScope.TimeText(player: Player) {
 
 @Composable
 @OptIn(UnstableApi::class)
-private fun PlayPauseButton(player: Player, modifier: Modifier) {
+private fun PlayPauseButton(player: Player, modifier: Modifier = Modifier) {
     val state = rememberPlayPauseButtonState(player)
     val icon = if (state.showPlay) Icons.Default.PlayArrow else Icons.Default.Pause
     val contentDescription =
@@ -336,8 +336,7 @@ private fun PlayPauseButton(player: Player, modifier: Modifier) {
     }
 }
 
-private fun Player.currentPositionDuration(): Duration =
-    currentPosition.toDuration(DurationUnit.MILLISECONDS)
+private fun Player.currentPositionDuration(): Duration = currentPosition.toDuration(DurationUnit.MILLISECONDS)
 
 @Preview(showSystemUi = true)
 @Composable

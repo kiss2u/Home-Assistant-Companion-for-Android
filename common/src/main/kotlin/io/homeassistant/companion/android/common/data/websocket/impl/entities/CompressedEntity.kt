@@ -10,6 +10,7 @@ import kotlin.math.round
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Polymorphic
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNames
 
 /**
@@ -46,10 +47,10 @@ data class CompressedStateDiff(
 @Serializable
 data class CompressedEntityState(
     @JsonNames("s")
-    val state: String? = null,
+    val state: JsonElement? = null,
     @Serializable(with = MapAnySerializer::class)
     @JsonNames("a")
-    val attributes: Map<String, @Polymorphic Any?>,
+    val attributes: Map<String, @Polymorphic Any?> = emptyMap(),
     @JsonNames("lc")
     val lastChanged: Double? = null,
     @JsonNames("lu")
@@ -62,9 +63,17 @@ data class CompressedEntityState(
     fun toEntity(entityId: String): Entity {
         return Entity(
             entityId = entityId,
-            state = state!!,
+            state = checkNotNull(state) { "State must not be null" },
             attributes = attributes,
-            lastChanged = LocalDateTime.ofEpochSecond(round(lastChanged!!).toLong(), 0, ZoneOffset.UTC),
+            lastChanged = LocalDateTime.ofEpochSecond(
+                round(
+                    checkNotNull(lastChanged) {
+                        "lastChanged must not be null"
+                    },
+                ).toLong(),
+                0,
+                ZoneOffset.UTC,
+            ),
             lastUpdated = LocalDateTime.ofEpochSecond(
                 if (lastUpdated != null) {
                     round(lastUpdated * 1000).toLong()

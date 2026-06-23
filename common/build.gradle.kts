@@ -1,6 +1,8 @@
 plugins {
     alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.parcelize)
     alias(libs.plugins.homeassistant.android.common)
+    alias(libs.plugins.homeassistant.android.compose)
 }
 
 val homeAssistantAndroidPushUrl: String by project
@@ -16,6 +18,11 @@ android {
         buildConfigField("String", "PUSH_URL", "\"$homeAssistantAndroidPushUrl\"")
         buildConfigField("String", "RATE_LIMIT_URL", "\"$homeAssistantAndroidRateLimitUrl\"")
         buildConfigField("String", "VERSION_NAME", "\"$versionName-$versionCode\"")
+    }
+
+    sourceSets {
+        // Adds exported schema location as test app assets.
+        getByName("androidTest").assets.directories += "$projectDir/schemas"
     }
 }
 
@@ -57,8 +64,24 @@ dependencies {
     }
 
     androidTestImplementation(libs.bundles.androidx.test)
+    androidTestImplementation(libs.androidx.room.testing)
 
     // This fix an issue: provided Metadata instance has version 2.1.0, while maximum supported version is 2.0.0. To support newer versions, update the kotlinx-metadata-jvm library
     lintChecks(libs.androidx.runtime.lint)
-    implementation(platform(libs.compose.bom))
+
+    implementation(libs.compose.material3)
+    lintChecks(libs.compose.lint.checks)
+
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.datasource.okhttp)
+    // The play-services-cronet dependency is excluded here because each app flavor provides its own Cronet implementation:
+    // - full: uses Google Play Services Cronet (dynamically loaded via GMS)
+    // - minimal: uses embedded Cronet (bundled in the APK)
+    implementation(libs.media3.datasource.cronet) {
+        exclude(group = "com.google.android.gms", module = "play-services-cronet")
+    }
+    implementation(libs.cronet.api)
+
+    // Force patched protobuf-javalite version to fix CVE-2024-7254 (DoS via StackOverflow in nested groups/map fields)
+    implementation(libs.protobuf.javalite)
 }

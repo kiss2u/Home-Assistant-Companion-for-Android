@@ -18,47 +18,71 @@ import io.homeassistant.companion.android.common.notifications.handleSmallIcon
 import io.homeassistant.companion.android.common.notifications.handleText
 import io.homeassistant.companion.android.common.util.cancelGroupIfNeeded
 import io.homeassistant.companion.android.common.util.getActiveNotification
+import io.homeassistant.companion.android.common.util.toJsonObject
 import io.homeassistant.companion.android.common.util.tts.TextToSpeechClient
 import io.homeassistant.companion.android.common.util.tts.TextToSpeechData
-import io.homeassistant.companion.android.database.AppDatabase
+import io.homeassistant.companion.android.database.notification.NotificationDao
 import io.homeassistant.companion.android.database.notification.NotificationItem
 import io.homeassistant.companion.android.database.sensor.SensorDao
 import io.homeassistant.companion.android.sensors.SensorReceiver
+import io.homeassistant.companion.android.util.sensitive
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 import timber.log.Timber
 
 class MessagingManager @Inject constructor(
     @ApplicationContext val context: Context,
     private val serverManager: ServerManager,
     private val sensorDao: SensorDao,
+    private val notificationDao: NotificationDao,
     private val textToSpeechClient: TextToSpeechClient,
 ) {
     private val mainScope: CoroutineScope = CoroutineScope(Dispatchers.Main + Job())
 
     fun handleMessage(notificationData: Map<String, String>, source: String) {
-        val notificationDao = AppDatabase.getInstance(context).notificationDao()
-        val now = System.currentTimeMillis()
-
-        val jsonData = notificationData as Map<String, String>?
-        val jsonObject = jsonData?.let { JSONObject(it) }
-        val serverId = jsonData?.get(NotificationData.WEBHOOK_ID)?.let {
-            serverManager.getServer(webhookId = it)?.id
-        } ?: ServerManager.SERVER_ID_ACTIVE
-        val notificationRow =
-            NotificationItem(0, now, notificationData[NotificationData.MESSAGE].toString(), jsonObject.toString(), source, serverId)
-        notificationDao.add(notificationRow)
-        if (serverManager.getServer(serverId) == null) {
-            Timber.w("Received notification but no server for it, discarding")
-            return
-        }
-
         mainScope.launch {
-            val allowCommands = serverManager.integrationRepository(serverId).isTrusted()
+            val now = System.currentTimeMillis()
+
+            val jsonData = notificationData as Map<String, String>?
+            val jsonObject = jsonData?.toJsonObject()
+            val receivedWebhookId = jsonData?.get(NotificationData.WEBHOOK_ID)
+            val receivedServerId = receivedWebhookId?.let {
+                serverManager.getServer(webhookId = it)?.id
+            }
+            val notificationRow =
+                NotificationItem(
+                    0,
+                    now,
+                    notificationData[NotificationData.MESSAGE].toString(),
+                    jsonObject.toString(),
+                    source,
+                    receivedServerId,
+                )
+            notificationDao.add(notificationRow)
+
+            val webhookServerId = receivedWebhookId?.let { webhookId ->
+                val serverForWebhook = serverManager.getServer(webhookId = webhookId)
+                if (serverForWebhook == null) {
+                    Timber.w(
+                        "Received notification with webhook ID ${sensitive(
+                            webhookId,
+                        )} but no matching server, ignoring",
+                    )
+                    return@launch
+                }
+
+                serverForWebhook.id
+            } ?: ServerManager.SERVER_ID_ACTIVE
+
+            if (serverManager.getServer(webhookServerId) == null) {
+                Timber.w("Received notification but no server available, ignoring")
+                return@launch
+            }
+
+            val allowCommands = serverManager.integrationRepository(webhookServerId).isTrusted()
             val message = notificationData[NotificationData.MESSAGE]
             when {
                 message == NotificationData.CLEAR_NOTIFICATION && !notificationData["tag"].isNullOrBlank() -> {
@@ -70,7 +94,7 @@ class MessagingManager @Inject constructor(
                     }
                 }
                 message == DeviceCommandData.COMMAND_BLE_TRANSMITTER && allowCommands -> {
-                    if (!commandBleTransmitter(context, notificationData, sensorDao, mainScope)) {
+                    if (!commandBleTransmitter(context, notificationData, sensorDao)) {
                         sendNotification(notificationData)
                     }
                 }
@@ -86,7 +110,7 @@ class MessagingManager @Inject constructor(
     private fun sendNotification(data: Map<String, String>, received: Long? = null) {
         val notificationManagerCompat = NotificationManagerCompat.from(context)
 
-        val tag = data["tag"]
+        val tag = data["tag"].takeIf { !it.isNullOrBlank() }
         val messageId = tag?.hashCode() ?: received?.toInt() ?: System.currentTimeMillis().toInt()
 
         var group = data["group"]

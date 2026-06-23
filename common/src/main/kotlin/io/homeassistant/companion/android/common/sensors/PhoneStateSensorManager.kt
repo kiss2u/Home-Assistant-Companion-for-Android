@@ -14,6 +14,7 @@ import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.util.STATE_UNAVAILABLE
 import io.homeassistant.companion.android.common.util.STATE_UNKNOWN
+import io.homeassistant.companion.android.common.util.SdkVersion
 import timber.log.Timber
 
 class PhoneStateSensorManager : SensorManager {
@@ -126,34 +127,45 @@ class PhoneStateSensorManager : SensorManager {
     }
     override suspend fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
         return when {
-            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_RADIO_ACCESS)) ->
-                listOf(phoneState, sim_1, sim_2, sim1SignalStrength, sim2SignalStrength, sim1DataNetworkType, sim2DataNetworkType)
-            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_RADIO_ACCESS)) ->
+            (
+                SdkVersion.isAtLeast(Build.VERSION_CODES.Q) &&
+                    context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_RADIO_ACCESS)
+                ) ->
+                listOf(
+                    phoneState,
+                    sim_1,
+                    sim_2,
+                    sim1SignalStrength,
+                    sim2SignalStrength,
+                    sim1DataNetworkType,
+                    sim2DataNetworkType,
+                )
+
+            (
+                SdkVersion.isAtLeast(Build.VERSION_CODES.N) &&
+                    context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_RADIO_ACCESS)
+                ) ->
                 listOf(phoneState, sim_1, sim_2, sim1DataNetworkType, sim2DataNetworkType)
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1 -> {
-                listOf(phoneState, sim_1, sim_2)
-            }
+
             else -> {
-                listOf(phoneState)
+                listOf(phoneState, sim_1, sim_2)
             }
         }
     }
 
-    override fun requiredPermissions(sensorId: String): Array<String> {
+    override fun requiredPermissions(context: Context, sensorId: String): Array<String> {
         return arrayOf(Manifest.permission.READ_PHONE_STATE)
     }
 
-    override suspend fun requestSensorUpdate(
-        context: Context,
-    ) {
+    override suspend fun requestSensorUpdate(context: Context) {
         checkPhoneState(context)
         updateSimSensor(context, 0)
         updateSimSensor(context, 1)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) {
             updateSignalStrength(context, 0)
             updateSignalStrength(context, 1)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        if (SdkVersion.isAtLeast(Build.VERSION_CODES.N)) {
             updateDataNetworkType(context, 0)
             updateDataNetworkType(context, 1)
         }
@@ -182,7 +194,7 @@ class PhoneStateSensorManager : SensorManager {
         }
     }
 
-    private fun updatePhoneStateSensor(context: Context, state: String) {
+    private suspend fun updatePhoneStateSensor(context: Context, state: String) {
         var phoneIcon = "mdi:phone"
         if (state == "ringing" || state == "offhook") {
             phoneIcon += "-in-talk"
@@ -209,42 +221,41 @@ class PhoneStateSensorManager : SensorManager {
         if (!isEnabled(context, basicSimSensor)) {
             return
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-            var displayName = STATE_UNAVAILABLE
-            val attrs = mutableMapOf<String, Any>()
+        var displayName = STATE_UNAVAILABLE
+        val attrs = mutableMapOf<String, Any>()
 
-            if (checkPermission(context, basicSimSensor.id)) {
-                val subscriptionManager =
-                    context.applicationContext.getSystemService<SubscriptionManager>()
-                val info: SubscriptionInfo? =
-                    subscriptionManager?.getActiveSubscriptionInfoForSimSlotIndex(slotIndex)
+        if (checkPermission(context, basicSimSensor.id)) {
+            val subscriptionManager =
+                context.applicationContext.getSystemService<SubscriptionManager>()
+            val info: SubscriptionInfo? =
+                subscriptionManager?.getActiveSubscriptionInfoForSimSlotIndex(slotIndex)
 
-                if (info != null) {
-                    try {
-                        displayName = info.displayName?.toString() ?: info.carrierName.toString()
-                        attrs["carrier name"] = info.carrierName
-                        attrs["iso country code"] = info.countryIso
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            attrs["carrier id"] = info.carrierId
-                            attrs["mcc"] = info.mccString.toString()
-                            attrs["mnc"] = info.mncString.toString()
-                            attrs["is opportunistic"] = info.isOpportunistic
-                            attrs["data roaming"] = if (info.dataRoaming == SubscriptionManager.DATA_ROAMING_ENABLE) "enable" else "disable"
-                        }
-                    } catch (e: Exception) {
-                        Timber.e(e, "Unable to get SIM data")
+            if (info != null) {
+                try {
+                    displayName = info.displayName?.toString() ?: info.carrierName.toString()
+                    attrs["carrier name"] = info.carrierName
+                    attrs["iso country code"] = info.countryIso
+                    if (SdkVersion.isAtLeast(Build.VERSION_CODES.Q)) {
+                        attrs["carrier id"] = info.carrierId
+                        attrs["mcc"] = info.mccString.toString()
+                        attrs["mnc"] = info.mncString.toString()
+                        attrs["is opportunistic"] = info.isOpportunistic
+                        attrs["data roaming"] =
+                            if (info.dataRoaming == SubscriptionManager.DATA_ROAMING_ENABLE) "enable" else "disable"
                     }
+                } catch (e: Exception) {
+                    Timber.e(e, "Unable to get SIM data")
                 }
             }
-
-            onSensorUpdated(
-                context,
-                basicSimSensor,
-                displayName,
-                basicSimSensor.statelessIcon,
-                attrs,
-            )
         }
+
+        onSensorUpdated(
+            context,
+            basicSimSensor,
+            displayName,
+            basicSimSensor.statelessIcon,
+            attrs,
+        )
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)

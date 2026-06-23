@@ -9,22 +9,28 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
+import androidx.paging.PagingSource
+import androidx.paging.cachedIn
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.homeassistant.companion.android.R
 import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
+import io.homeassistant.companion.android.common.data.servers.ServerManager
 import io.homeassistant.companion.android.database.location.LocationHistoryDao
+import io.homeassistant.companion.android.database.location.LocationHistoryItem
 import io.homeassistant.companion.android.database.location.LocationHistoryItemResult
+import io.homeassistant.companion.android.database.server.Server
 import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.launch
-import timber.log.Timber
 
 @HiltViewModel
 class LocationTrackingViewModel @Inject constructor(
     private val locationHistoryDao: LocationHistoryDao,
     private val prefsRepository: PrefsRepository,
+    private val serverManager: ServerManager,
     application: Application,
 ) : AndroidViewModel(application) {
 
@@ -40,35 +46,44 @@ class LocationTrackingViewModel @Inject constructor(
         ;
 
         companion object {
-            val menuItemIdToFilter = values().associateBy { it.menuItemId }
+            val menuItemIdToFilter = entries.associateBy { it.menuItemId }
         }
     }
 
     var historyEnabled by mutableStateOf(false)
         private set
 
+    var servers by mutableStateOf(emptyList<Server>())
+        private set
+
     private val historyResultFilter = MutableStateFlow(HistoryFilter.ALL)
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val historyPagerFlow = historyResultFilter.flatMapLatest { filter ->
+        var currentSource: PagingSource<Int, LocationHistoryItem>? = null
         Pager(PagingConfig(pageSize = PAGE_SIZE, maxSize = PAGE_SIZE * 6)) {
-            Timber.d("Returning PagingSource for history filter: $filter")
             when (filter) {
+                HistoryFilter.ALL -> locationHistoryDao.getAll()
                 HistoryFilter.SENT ->
                     locationHistoryDao.getAll(listOf(LocationHistoryItemResult.SENT.name))
                 HistoryFilter.SKIPPED -> locationHistoryDao.getAll(
-                    (LocationHistoryItemResult.values().toMutableList() - LocationHistoryItemResult.SENT - LocationHistoryItemResult.FAILED_SEND)
+                    (
+                        LocationHistoryItemResult.entries.toMutableList() - LocationHistoryItemResult.SENT -
+                            LocationHistoryItemResult.FAILED_SEND
+                        )
                         .map { it.name },
                 )
                 HistoryFilter.FAILED ->
                     locationHistoryDao.getAll(listOf(LocationHistoryItemResult.FAILED_SEND.name))
-                else -> locationHistoryDao.getAll()
-            }
-        }.flow
-    }
+            }.also { currentSource = it }
+        }.flow.onCompletion {
+            currentSource?.invalidate()
+        }
+    }.cachedIn(viewModelScope)
 
     init {
         viewModelScope.launch {
+            servers = serverManager.servers()
             historyEnabled = prefsRepository.isLocationHistoryEnabled()
         }
     }

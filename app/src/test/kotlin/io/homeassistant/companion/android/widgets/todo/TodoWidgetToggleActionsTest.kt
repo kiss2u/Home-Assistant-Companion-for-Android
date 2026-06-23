@@ -19,7 +19,7 @@ import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.assertThrows
+import org.junit.jupiter.api.fail
 
 class TodoWidgetToggleActionsTest {
 
@@ -27,7 +27,7 @@ class TodoWidgetToggleActionsTest {
         val dao = mockk<TodoWidgetDao>()
         val webSocketRepository = mockk<WebSocketRepository>()
         val serverManager = mockk<ServerManager>().apply {
-            every { webSocketRepository(any()) } returns webSocketRepository
+            coEvery { webSocketRepository(any()) } returns webSocketRepository
         }
 
         override fun serverManager(): ServerManager = serverManager
@@ -98,18 +98,48 @@ class TodoWidgetToggleActionsTest {
         coEvery {
             entryPoints.webSocketRepository.updateTodo(any(), any(), any(), any())
         } returns true
+        coEvery { entryPoints.serverManager.getServer(42) } returns mockk()
 
         coEvery { entryPoints.dao().get(widgetId) } returns todoItem
 
         // This is useful to validate that it calls update()
-        assertThrows<IllegalArgumentException>("Invalid Glance ID") {
+        try {
             action.onAction(mockk(), FakeGlanceId(widgetId), parameters)
+            fail { "onAction should fail with invalid glance ID" }
+        } catch (e: IllegalArgumentException) {
+            assertEquals("Invalid Glance ID", e.message)
         }
 
         coVerify(exactly = 1) {
             entryPoints.dao().get(widgetId)
             entryPoints.serverManager().webSocketRepository(42)
             entryPoints.webSocketRepository.updateTodo("HA", "42", null, COMPLETED_STATUS)
+        }
+    }
+
+    @Test
+    fun `Given a widgetID and todo item state with uid but server removed when present in DAO and invoking onAction then do nothing`() = runTest {
+        val action = spyk<ToggleTodoAction>()
+        val glanceManager = mockk<GlanceAppWidgetManager>()
+        val widgetId = 1
+        val todoItem = TodoWidgetEntity(1, 42, "HA")
+        val parameters = actionParametersOf(TOGGLE_KEY to TodoItemState("42", "", false))
+
+        every { action.getEntryPoints(any()) } returns entryPoints
+        every { action.getGlanceManager(any()) } returns glanceManager
+        every { glanceManager.getAppWidgetId(any()) } returns widgetId
+        coEvery { entryPoints.serverManager.getServer(42) } returns null
+
+        coEvery { entryPoints.dao().get(widgetId) } returns todoItem
+
+        action.onAction(mockk(), FakeGlanceId(widgetId), parameters)
+
+        coVerify(exactly = 1) {
+            entryPoints.dao().get(widgetId)
+            entryPoints.serverManager().getServer(42)
+        }
+        coVerify(exactly = 0) {
+            entryPoints.serverManager().webSocketRepository(any())
         }
     }
 

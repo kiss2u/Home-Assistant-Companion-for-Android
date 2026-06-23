@@ -187,6 +187,13 @@ class LocationSensorManager :  BroadcastReceiver(), SensorManager {
             SINGLE_ACCURATE_LOCATION,
         }
 
+        fun createRequestAccurateLocationUpdateIntent(context: Context): Intent = Intent(
+            context,
+            LocationSensorManager::class.java,
+        ).apply {
+            action = ACTION_REQUEST_ACCURATE_LOCATION_UPDATE
+        }
+
         fun setHighAccuracyModeSetting(context: Context, enabled: Boolean) {
             val sensorDao = AppDatabase.getInstance(context).sensorDao()
             sensorDao.add(
